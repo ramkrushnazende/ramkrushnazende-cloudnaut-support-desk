@@ -1,7 +1,7 @@
 import os
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from auth import get_current_user, require_roles
 from schemas.access_requests import AccessRequestCreate, AccessRequestResponse, AccessRequestReview
@@ -13,7 +13,6 @@ from schemas.password_reset import PasswordResetConfirm, PasswordResetRequest
 from schemas.request import TicketCreate, TicketResponse, TicketUpdate
 from schemas.team_members import (
     LoginRequest,
-    TeamMemberCreate,
     TeamMemberResponse,
     TeamMemberUpdate,
 )
@@ -424,6 +423,26 @@ async def login(credentials: LoginRequest):
     )
 
 
+def _strip_token_from_identity(user: dict) -> dict:
+    return {k: v for k, v in user.items() if k != "token"}
+
+
+@team_router.get("/auth/whoami")
+@team_router.get("/auth/whami")
+async def whoami(user=Depends(get_current_user)):
+    """Return the DB-authoritative identity for the presented token.
+
+    Used by the frontend after Cognito sign-in to resolve role/email/name from
+    PostgreSQL (via the backend). get_current_user already validated the token
+    and, in cognito/dual mode, resolved the identity through the backend. The
+    raw token is stripped from the response.
+
+    `/auth/whami` is kept as a compatibility alias for older frontend or
+    gateway routes during the Cognito rollout.
+    """
+    return _strip_token_from_identity(user)
+
+
 @team_router.post("/auth/forgot-password")
 async def forgot_password(request: PasswordResetRequest):
     return await backend_request(
@@ -442,12 +461,39 @@ async def reset_password(request: PasswordResetConfirm):
     )
 
 
+@team_router.post("/profile/phone")
+async def sync_verified_profile_phone(user=Depends(get_current_user)):
+    return await backend_request(
+        "POST",
+        "/internal/profile/phone",
+        access_token=user["token"],
+    )
+
+
+@team_router.post("/profile/mfa")
+async def sync_profile_mfa_status(user=Depends(get_current_user)):
+    return await backend_request(
+        "POST",
+        "/internal/profile/mfa",
+        access_token=user["token"],
+    )
+
+
 @team_router.post("/auth/signup", response_model=AccessRequestResponse, status_code=status.HTTP_201_CREATED)
-async def signup(request: AccessRequestCreate):
+async def signup(
+    request: AccessRequestCreate,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+    access_token = authorization[7:].strip()
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Sign-in required.")
     return await backend_request(
         "POST",
         "/internal/access-requests",
         json=request.model_dump(mode="json"),
+        access_token=access_token,
     )
 
 
@@ -483,19 +529,6 @@ async def get_progress_updates(user=Depends(require_roles("employee"))):
     return await backend_request(
         "GET",
         "/internal/progress-updates",
-        access_token=user["token"],
-    )
-
-
-@team_router.post("/team-members", response_model=TeamMemberResponse, status_code=status.HTTP_201_CREATED)
-async def create_team_member(
-    member: TeamMemberCreate,
-    user=Depends(require_roles("admin")),
-):
-    return await backend_request(
-        "POST",
-        "/internal/team-members",
-        json=member.model_dump(mode="json"),
         access_token=user["token"],
     )
 

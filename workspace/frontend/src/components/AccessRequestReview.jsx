@@ -8,6 +8,7 @@ function AccessRequestReview() {
 	const [error, setError] = useState('')
 	const [loading, setLoading] = useState(true)
 	const [reviewingId, setReviewingId] = useState(null)
+	const [notice, setNotice] = useState('')
 
 	useEffect(() => {
 		let active = true
@@ -37,6 +38,9 @@ function AccessRequestReview() {
 			const data = await response.json()
 			if (!response.ok) throw new Error(data.detail || 'Could not review this request.')
 			setRequests((current) => current.filter((request) => request.id !== requestId))
+			if (status === 'approved') {
+				setNotice('Access approved. The verified Cognito identity is now linked to the application account.')
+			}
 		} catch (reviewError) {
 			setError(reviewError.message || 'Could not connect to the service.')
 		} finally {
@@ -49,6 +53,7 @@ function AccessRequestReview() {
 	return (
 		<div className="access-request-list">
 			{error && <div className="error-box"><strong>Request action failed</strong><span>{error}</span></div>}
+			{notice && <p className="team-notice" role="status">{notice}</p>}
 			{requests.length === 0 ? (
 				<p className="access-request-state">There are no pending access requests.</p>
 			) : requests.map((request) => (
@@ -60,9 +65,12 @@ function AccessRequestReview() {
 						</div>
 						<span className="access-request-role">{roleNames[request.role] || request.role}</span>
 					</div>
+					<p className="access-request-message">
+						Email verification: {request.email_verified ? 'Verified' : 'Not verified'}
+					</p>
 					{request.message && <p className="access-request-message">{request.message}</p>}
 					<div className="access-request-actions">
-						<button type="button" className="submit-button" disabled={reviewingId !== null} onClick={() => reviewRequest(request.id, 'approved')}>
+						<button type="button" className="submit-button" disabled={reviewingId !== null || !request.email_verified} onClick={() => reviewRequest(request.id, 'approved')}>
 							{reviewingId === request.id ? 'Saving...' : 'Approve'}
 						</button>
 						<button type="button" className="secondary-button" disabled={reviewingId !== null} onClick={() => reviewRequest(request.id, 'rejected')}>

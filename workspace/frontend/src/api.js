@@ -1,4 +1,21 @@
-const API_URL = 'http://localhost:4000'
+// API base URL. In production builds this is injected from VITE_API_URL
+// (see .env.production); locally it falls back to the Vite dev backend.
+// Only a public URL is embedded here — never a secret.
+import { isCognitoMode } from './cognito/config'
+import { getAccessToken } from './cognito/cognitoAuth'
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000'
+
+// Resolve the bearer token for the current auth mode. In Cognito mode the
+// token is the Cognito ACCESS token held in the SDK session (refreshed as
+// needed); in legacy mode it is the existing localStorage app token. Role is
+// never derived from this token — the backend resolves it from PostgreSQL.
+async function resolveAuthToken() {
+  if (isCognitoMode()) {
+    return getAccessToken()
+  }
+  return localStorage.getItem('supportDeskToken')
+}
 const MIME_TYPE_BY_EXTENSION = {
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
@@ -13,18 +30,23 @@ const MIME_TYPE_BY_EXTENSION = {
   txt: 'text/plain',
 }
 
-export function apiFetch(path, options = {}) {
-  const token = localStorage.getItem('supportDeskToken')
-  const headers = new Headers(options.headers || {})
+export async function apiFetch(path, options = {}) {
+  // An explicit options.authToken overrides the stored-session lookup. This is
+  // used right after a Cognito challenge completes (new-password / MFA), when
+  // the SDK session may not yet be readable from storage, so we must use the
+  // token the SDK just returned rather than re-deriving it.
+  const { authToken, ...fetchOptions } = options
+  const token = authToken || (await resolveAuthToken())
+  const headers = new Headers(fetchOptions.headers || {})
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (
-    options.body &&
-    !(typeof FormData !== 'undefined' && options.body instanceof FormData) &&
+    fetchOptions.body &&
+    !(typeof FormData !== 'undefined' && fetchOptions.body instanceof FormData) &&
     !headers.has('Content-Type')
   ) {
     headers.set('Content-Type', 'application/json')
   }
-  return fetch(`${API_URL}${path}`, { ...options, headers })
+  return fetch(`${API_URL}${path}`, { ...fetchOptions, headers })
 }
 
 export function getDashboardSummary() {

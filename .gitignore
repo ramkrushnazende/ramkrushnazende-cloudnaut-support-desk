@@ -58,3 +58,7 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 *.swp
+
+# Local database backups and generated analysis
+backups/
+.codegraph/

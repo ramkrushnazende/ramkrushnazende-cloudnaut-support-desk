@@ -1,0 +1,87 @@
+# Production Docker Compose for AWS EC2 (Phase 1).
+#
+# Runs ONLY the application tiers on the EC2 host:
+#   - api      (public entry, port 4000 published to the host)
+#   - backend  (internal only, NOT published)
+#
+# Managed AWS services replace the local containers:
+#   PostgreSQL -> Aurora PostgreSQL (via DATABASE_URL)
+#   MinIO      -> Amazon S3 (via S3_BUCKET / AWS_REGION + EC2 IAM role)
+#   Mailpit    -> Amazon SES (via SMTP_* , Phase 2)
+#
+# Secret values (AUTH_SECRET_KEY, DATABASE_URL, SMTP_USERNAME/PASSWORD) are
+# injected into the host environment at boot from AWS Secrets Manager by the
+# EC2 bootstrap/user-data step. They are NOT stored in this file or in git.
+# No `${VAR:-default}` fallbacks are provided for secrets on purpose.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: workspace/backend/Dockerfile
+    container_name: app_backend
+    environment:
+      # --- Secrets (from Secrets Manager -> host env) ---
+      - DATABASE_URL=${DATABASE_URL}
+      - AUTH_SECRET_KEY=${AUTH_SECRET_KEY}
+      # --- Cognito authentication and admin provisioning ---
+      - AUTH_MODE=${AUTH_MODE:?Set AUTH_MODE}
+      - COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID:?Set COGNITO_USER_POOL_ID}
+      - COGNITO_APP_CLIENT_ID=${COGNITO_APP_CLIENT_ID:?Set COGNITO_APP_CLIENT_ID}
+      # --- S3 (bucket pre-created by CDK; creds via EC2 IAM role) ---
+      - S3_BUCKET=${S3_BUCKET}
+      - AWS_REGION=${AWS_REGION}
+      # --- Email via SES (Phase 2; empty here is fine) ---
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
+      - FRONTEND_URL=${FRONTEND_URL:-}
+    # Backend is internal only: no published ports. The api container reaches it
+    # over the shared Docker network as http://backend:8001.
+    expose:
+      - "8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8001/health', timeout=3).status==200 else sys.exit(1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - app_network
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./workspace/api
+      dockerfile: Dockerfile
+    container_name: app_api
+    environment:
+      - PORT=4000
+      - BACKEND_URL=http://backend:8001
+      - AUTH_SECRET_KEY=${AUTH_SECRET_KEY}
+      - AUTH_MODE=${AUTH_MODE:?Set AUTH_MODE}
+      - COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID:?Set COGNITO_USER_POOL_ID}
+      - COGNITO_APP_CLIENT_ID=${COGNITO_APP_CLIENT_ID:?Set COGNITO_APP_CLIENT_ID}
+      - AWS_REGION=${AWS_REGION}
+    # Only the public API port is published to the EC2 host.
+    ports:
+      - "4000:4000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:4000/health', timeout=3).status==200 else sys.exit(1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - app_network
+    restart: unless-stopped
+
+networks:
+  app_network:
+    driver: bridge

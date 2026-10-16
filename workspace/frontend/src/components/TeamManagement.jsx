@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiFetch } from '../api'
 
-const emptyMember = { name: '', email: '', password: '', role: 'support' }
-
 async function fetchMembers() {
   const response = await apiFetch('/team-members')
   const data = await response.json()
@@ -12,7 +10,6 @@ async function fetchMembers() {
 
 function TeamManagement() {
   const [members, setMembers] = useState([])
-  const [draft, setDraft] = useState(emptyMember)
   const [editingId, setEditingId] = useState(null)
   const [editDraft, setEditDraft] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -26,28 +23,6 @@ function TeamManagement() {
       .catch((loadError) => setError(loadError.message))
       .finally(() => setLoading(false))
   }, [])
-
-  const createMember = async (event) => {
-    event.preventDefault()
-    setSaving(true)
-    setError('')
-    setNotice('')
-    try {
-      const response = await apiFetch('/team-members', {
-        method: 'POST',
-        body: JSON.stringify(draft),
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.detail || 'Could not create account.')
-      setDraft(emptyMember)
-      setNotice(`${data.name} has been added.`)
-      setMembers(await fetchMembers())
-    } catch (saveError) {
-      setError(saveError.message)
-    } finally {
-      setSaving(false)
-    }
-  }
 
   const startEditing = (member) => {
     setEditingId(member.id)
@@ -86,33 +61,7 @@ function TeamManagement() {
     <div className="team-management">
       <section className="team-create-section">
         <h3>Add staff account</h3>
-        <form className="ticket-form" onSubmit={createMember}>
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="staff-name">Name</label>
-              <input id="staff-name" required maxLength="100" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
-            </div>
-            <div className="form-group">
-              <label htmlFor="staff-email">Work email</label>
-              <input id="staff-email" type="email" required value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} />
-            </div>
-          </div>
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="staff-password">Temporary password</label>
-              <input id="staff-password" type="password" minLength="12" autoComplete="new-password" required value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} />
-            </div>
-            <div className="form-group">
-              <label htmlFor="staff-role">Role</label>
-              <select id="staff-role" value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value })}>
-                <option value="employee">Employee</option>
-                <option value="support">Support staff</option>
-                <option value="admin">Administrator</option>
-              </select>
-            </div>
-          </div>
-          <button className="submit-button" type="submit" disabled={saving}>{saving ? 'Adding...' : 'Add account'}</button>
-        </form>
+        <p>New employees and support staff register using the public sign-up form. Review and approve verified requests in Access Requests.</p>
       </section>
 
       {error && <div className="error-box"><strong>Account action failed</strong><span>{error}</span></div>}

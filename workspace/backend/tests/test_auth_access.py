@@ -97,7 +97,7 @@ def test_employee_access_is_limited_to_own_tickets_and_read_only(monkeypatch):
         engine.dispose()
 
 
-def test_admin_login_and_staff_provisioning(monkeypatch):
+def test_admin_login_and_self_disable_protection(monkeypatch):
     monkeypatch.setattr(auth, "JWT_SECRET", "auth-access-test-secret-with-32-bytes")
     engine = create_engine(
         "sqlite://",
@@ -135,38 +135,12 @@ def test_admin_login_and_staff_provisioning(monkeypatch):
         assert "password_hash" not in login.json()["user"]
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        created = client.post(
-            "/internal/team-members",
-            headers=headers,
-            json={
-                "name": "Support Tech",
-                "email": "tech@example.com",
-                "password": "SupportPassword-2026!",
-                "role": "support",
-            },
-        )
-        assert created.status_code == 201
-        assert created.json()["role"] == "support"
-        assert "password_hash" not in created.json()
-
         self_disable = client.patch(
             f"/internal/team-members/{admin.id}",
             headers=headers,
             json={"is_active": False},
         )
         assert self_disable.status_code == 400
-
-        reset = client.patch(
-            f"/internal/team-members/{created.json()['id']}",
-            headers=headers,
-            json={"password": "NewSupportPassword-2026!"},
-        )
-        assert reset.status_code == 200
-        reset_login = client.post(
-            "/internal/auth/login",
-            json={"email": "tech@example.com", "password": "NewSupportPassword-2026!"},
-        )
-        assert reset_login.status_code == 200
     finally:
         app.dependency_overrides.clear()
         db.close()

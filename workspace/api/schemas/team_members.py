@@ -6,13 +6,6 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
-class TeamMemberCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    email: EmailStr
-    password: str = Field(min_length=12, max_length=200)
-    role: str = Field(pattern="^(admin|support|employee)$")
-
-
 class TeamMemberUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

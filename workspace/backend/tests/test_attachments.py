@@ -17,7 +17,11 @@ from app.services.attachment_service import (
     AttachmentDeletionError,
     AttachmentService,
 )
-from app.services.object_storage import ObjectStorage, ObjectStorageError
+from app.services.object_storage import (
+    ObjectNotFoundError,
+    ObjectStorage,
+    ObjectStorageError,
+)
 from database.app.database import get_db
 from database.app.models import Base, RequestAttachment, SupportRequest, TeamMember
 
@@ -318,19 +322,43 @@ def test_minio_unavailable_does_not_create_metadata(attachment_setup, monkeypatc
     assert db.query(RequestAttachment).count() == 0
 
 
-def test_minio_connection_errors_are_reported_as_storage_errors():
-    from urllib3.exceptions import MaxRetryError
+def test_s3_connection_errors_are_reported_as_storage_errors():
+    from botocore.exceptions import EndpointConnectionError
 
-    class UnreachableMinio:
-        def bucket_exists(self, bucket):
-            raise MaxRetryError(None, "http://minio:9000", OSError("unavailable"))
+    class UnreachableS3:
+        def get_object(self, **kwargs):
+            raise EndpointConnectionError(endpoint_url="https://s3.amazonaws.com")
+
+        def delete_object(self, **kwargs):
+            raise EndpointConnectionError(endpoint_url="https://s3.amazonaws.com")
 
     storage = ObjectStorage.__new__(ObjectStorage)
     storage.bucket = "support-attachments"
-    storage.client = UnreachableMinio()
+    storage.client = UnreachableS3()
 
+    # S3 connectivity failures surface as ObjectStorageError (not raw botocore).
     with pytest.raises(ObjectStorageError):
-        storage.ensure_bucket()
+        storage.download("requests/1/missing.png")
+    with pytest.raises(ObjectStorageError):
+        storage.delete("requests/1/missing.png")
+
+
+def test_s3_missing_object_is_reported_as_object_not_found():
+    from botocore.exceptions import ClientError
+
+    class MissingKeyS3:
+        def get_object(self, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "missing"}},
+                "GetObject",
+            )
+
+    storage = ObjectStorage.__new__(ObjectStorage)
+    storage.bucket = "support-attachments"
+    storage.client = MissingKeyS3()
+
+    with pytest.raises(ObjectNotFoundError):
+        storage.download("requests/1/missing.png")
 
 
 def test_delete_attachment_removes_object_and_metadata(attachment_setup):

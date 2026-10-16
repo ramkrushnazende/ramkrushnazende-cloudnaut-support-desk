@@ -1,13 +1,14 @@
 from datetime import datetime
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class AccessRequestCreate(BaseModel):
-	name: str = Field(min_length=1, max_length=100)
-	email: EmailStr
-	password: str = Field(min_length=6, max_length=200)
-	role: str = Field(pattern="^(employee|support)$")
+	model_config = ConfigDict(extra="forbid")
+
+	role: Literal["employee", "support"]
 	message: str | None = Field(default=None, max_length=1000)
 
 
@@ -29,3 +30,5 @@ class AccessRequestResponse(BaseModel):
 	reviewed_at: datetime | None
 	reviewed_by: int | None
 	review_note: str | None
+	provisioning_status: str | None = None
+	email_verified: bool = False

@@ -1,5 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import LoginForm from './components/LoginForm'
+import CognitoLoginForm from './components/CognitoLoginForm'
+import ProfilePanel from './components/ProfilePanel'
+import { isCognitoMode } from './cognito/config'
+import { getAccessToken, signOut as cognitoSignOut } from './cognito/cognitoAuth'
+import { resolveIdentity } from './cognito/session'
 import ForgotPasswordForm from './components/ForgotPasswordForm'
 import PasswordResetForm from './components/PasswordResetForm'
 import RoleSelection from './components/RoleSelection'
@@ -17,11 +22,35 @@ import './App.css'
 
 function App() {
   const resetToken = new URLSearchParams(window.location.search).get('reset_token')
+  const cognitoMode = isCognitoMode()
   const [session, setSession] = useState(() => {
+    // Legacy mode restores synchronously from localStorage. Cognito mode
+    // restores asynchronously from the SDK session (see the effect below), so
+    // it starts null to avoid trusting a stale localStorage value.
+    if (cognitoMode) return null
     const token = localStorage.getItem('supportDeskToken')
     const user = localStorage.getItem('supportDeskUser')
     return token && user ? { token, user: JSON.parse(user) } : null
   })
+
+  // Cognito session restoration: if the SDK still holds a valid session on
+  // load, resolve the DB-authoritative identity and restore the session.
+  useEffect(() => {
+    if (!cognitoMode) return
+    let active = true
+    ;(async () => {
+      const token = await getAccessToken()
+      if (!token || !active) return
+      try {
+        const user = await resolveIdentity()
+        if (active) setSession({ token, user })
+      } catch {
+        // Invalid/expired session or no linked profile: stay logged out.
+        if (active) setSession(null)
+      }
+    })()
+    return () => { active = false }
+  }, [cognitoMode])
   const [showLogin, setShowLogin] = useState(false)
   const [showSignup, setShowSignup] = useState(false)
   const [showForgotPassword, setShowForgotPassword] = useState(false)
@@ -32,6 +61,7 @@ function App() {
   const [showTeam, setShowTeam] = useState(false)
   const [showAccessRequests, setShowAccessRequests] = useState(false)
   const [showRequestTracker, setShowRequestTracker] = useState(false)
+  const [showProfile, setShowProfile] = useState(false)
   const [selectedTicketId, setSelectedTicketId] = useState(null)
   const [createdTicket, setCreatedTicket] = useState(null)
   const [failedTicketAttachments, setFailedTicketAttachments] = useState([])
@@ -60,12 +90,17 @@ function App() {
     setShowTeam(false)
     setShowAccessRequests(false)
     setShowRequestTracker(false)
+    setShowProfile(false)
     setSelectedTicketId(null)
   }
 
   const handleLogin = (loginData) => {
-    localStorage.setItem('supportDeskToken', loginData.access_token)
-    localStorage.setItem('supportDeskUser', JSON.stringify(loginData.user))
+    // Legacy mode persists the app token to localStorage. Cognito mode keeps
+    // the token in the SDK session, so we only hold it in React state.
+    if (!cognitoMode) {
+      localStorage.setItem('supportDeskToken', loginData.access_token)
+      localStorage.setItem('supportDeskUser', JSON.stringify(loginData.user))
+    }
     setSession({ token: loginData.access_token, user: loginData.user })
     setShowLogin(false)
     setShowSignup(false)
@@ -73,8 +108,12 @@ function App() {
   }
 
   const handleLogout = () => {
-    localStorage.removeItem('supportDeskToken')
-    localStorage.removeItem('supportDeskUser')
+    if (cognitoMode) {
+      cognitoSignOut()
+    } else {
+      localStorage.removeItem('supportDeskToken')
+      localStorage.removeItem('supportDeskUser')
+    }
     setSession(null)
     setShowLogin(false)
     setShowSignup(false)
@@ -98,7 +137,7 @@ function App() {
     )
   }
 
-  const showingWelcome = !showForm && !showList && !showDashboard && !showTeam && !showAccessRequests && !showRequestTracker && !selectedTicketId
+  const showingWelcome = !showForm && !showList && !showDashboard && !showTeam && !showAccessRequests && !showRequestTracker && !showProfile && !selectedTicketId
 
   return (
     <div className="app-shell">
@@ -146,7 +185,26 @@ function App() {
               onForgotPassword={() => setShowForgotPassword(true)}
             />
           ) : showLogin ? (
-            selectedRole ? (
+            // Cognito is the single active login flow. Role selection is kept
+            // purely as a UI preference; the authoritative role is always
+            // resolved from the backend after authentication. When Cognito is
+            // not configured (local dev without env), fall back to the legacy
+            // role-based login so development still works.
+            cognitoMode ? (
+              selectedRole ? (
+                <CognitoLoginForm
+                  selectedRole={selectedRole}
+                  onLogin={handleLogin}
+                  onBackToRoles={() => setSelectedRole(null)}
+                  onSignUp={() => setShowSignup(true)}
+                />
+              ) : (
+                <RoleSelection
+                  onSelectRole={setSelectedRole}
+                  onBackHome={() => setShowLogin(false)}
+                />
+              )
+            ) : selectedRole ? (
               <LoginForm
                 role={selectedRole}
                 onLogin={handleLogin}
@@ -174,9 +232,44 @@ function App() {
           )
         ) : (
           <div className="session-strip">
-            <span>{session.user.name} <strong>{session.user.role}</strong></span>
-            <button type="button" className="secondary-button" onClick={handleLogout}>Sign out</button>
+            <div className="session-identity">
+              <span className="session-avatar" aria-hidden="true">
+                {(session.user.name || session.user.email || '?').trim().charAt(0).toUpperCase()}
+              </span>
+              <span className="session-identity-text">
+                <span className="session-name">{session.user.name || session.user.email}</span>
+                <span className="session-meta">
+                  {session.user.email}
+                  {' · '}<strong>{session.user.role}</strong>
+                  {session.user.is_active === false && (
+                    <span className="session-inactive"> · inactive</span>
+                  )}
+                </span>
+              </span>
+            </div>
+            <div className="session-strip-actions">
+              {cognitoMode && (
+                <button type="button" className="secondary-button"
+                        onClick={() => { goHome(); setShowProfile(true) }}>
+                  Profile
+                </button>
+              )}
+              <button type="button" className="secondary-button" onClick={handleLogout}>Sign out</button>
+            </div>
           </div>
+        )}
+
+        {session && cognitoMode && showProfile && (
+          <ProfilePanel
+            user={session.user}
+            onClose={() => setShowProfile(false)}
+            onPhoneVerified={(phone_number) =>
+              setSession((current) => current && ({
+                ...current,
+                user: { ...current.user, phone_number },
+              }))
+            }
+          />
         )}
 
         {session && showingWelcome && (
@@ -245,44 +338,14 @@ function App() {
               )}
             </div>
 
-            <div className="feature-grid">
-
-              <div className="feature-item">
-                <div className="feature-icon">⚡</div>
-                <div>
-                  <h3>Quick Submission</h3>
-                  <p>
-                    Create a request in just a few steps.
-                  </p>
-                </div>
-              </div>
-
-              <div className="feature-item">
-                <div className="feature-icon">🛠️</div>
-                <div>
-                  <h3>Technical Support</h3>
-                  <p>
-                    Report application, access or infrastructure issues.
-                  </p>
-                </div>
-              </div>
-
-              {session.user.role === 'employee' ? (
+            {session.user.role === 'employee' && (
+              <div className="feature-grid">
                 <RequestTracker
                   compact
                   onViewAll={() => setShowRequestTracker(true)}
                 />
-              ) : (
-                <div className="feature-item">
-                  <div className="feature-icon">📋</div>
-                  <div>
-                    <h3>Track Requests</h3>
-                    <p>Every submitted request gets a unique ticket ID.</p>
-                  </div>
-                </div>
-              )}
-
-            </div>
+              </div>
+            )}
 
           </section>
         )}

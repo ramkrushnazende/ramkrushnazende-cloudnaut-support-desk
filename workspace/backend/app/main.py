@@ -7,11 +7,21 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from urllib.parse import quote
 
-from fastapi import FastAPI, Depends, HTTPException, Query, status
+import boto3
+from botocore.exceptions import ClientError
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from typing import Any, Dict
+from typing import Any, Dict, Literal
 
 from app.auth import create_access_token, get_current_user, hash_password, require_roles, verify_password
+from app.cognito import (
+    CognitoConfigurationError,
+    CognitoTokenError,
+    CognitoVerificationUnavailable,
+    get_verifier,
+)
 from app.routers.attachments import router as attachments_router
 from database.app.database import get_db
 from database.app.models import AccessRequest, PasswordResetToken, TeamMember
@@ -61,8 +71,8 @@ def member_response(member):
     }
 
 
-def access_request_response(request):
-    return {
+def access_request_response(request, provisioning_status=None):
+    response = {
         "id": request.id,
         "name": request.name,
         "email": request.email,
@@ -73,12 +83,231 @@ def access_request_response(request):
         "reviewed_at": request.reviewed_at,
         "reviewed_by": request.reviewed_by,
         "review_note": request.review_note,
+        "email_verified": bool(request.cognito_sub),
     }
+    if provisioning_status:
+        response["provisioning_status"] = provisioning_status
+    return response
+
+
+class AccessRequestPayload(BaseModel):
+    role: Literal["employee", "support"]
+    message: str | None = Field(default=None, max_length=1000)
+
+def get_verified_signup_identity(access_token: str) -> dict[str, str]:
+    """Validate the access token and fetch its verified Cognito profile."""
+    try:
+        claims = get_verifier().verify_access_token(access_token)
+    except CognitoConfigurationError as error:
+        raise HTTPException(
+            status_code=500, detail="Cognito authentication is not configured."
+        ) from error
+    except CognitoVerificationUnavailable as error:
+        raise HTTPException(
+            status_code=503, detail="Cognito authentication is temporarily unavailable."
+        ) from error
+    except CognitoTokenError as error:
+        logger.warning(
+            "auth_event=signup_identity_rejected category=token_validation"
+        )
+        raise HTTPException(status_code=401, detail="Invalid or expired sign-in token.") from error
+
+    try:
+        client = boto3.client(
+            "cognito-idp",
+            region_name=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION"),
+        )
+        response = client.get_user(AccessToken=access_token)
+    except ClientError as error:
+        code = str(error.response.get("Error", {}).get("Code", ""))
+        logger.warning(
+            "auth_event=signup_identity_rejected category=cognito_get_user error_code=%s",
+            code or "unknown",
+        )
+        if code in {"NotAuthorizedException", "UserNotFoundException"}:
+            raise HTTPException(
+                status_code=401, detail="Invalid or expired sign-in token."
+            ) from error
+        raise HTTPException(
+            status_code=503, detail="Cognito profile verification is temporarily unavailable."
+        ) from error
+    except Exception as error:
+        logger.error(
+            "auth_event=signup_identity_failure category=cognito_get_user error_type=%s",
+            type(error).__name__,
+        )
+        raise HTTPException(
+            status_code=503, detail="Cognito profile verification is temporarily unavailable."
+        ) from error
+
+    attributes = {
+        item["Name"]: item["Value"]
+        for item in response.get("UserAttributes", [])
+        if isinstance(item, dict) and "Name" in item and "Value" in item
+    }
+    email = attributes.get("email", "").strip().lower()
+    name = attributes.get("name", "").strip()
+    if (
+        attributes.get("sub") != claims.sub
+        or not email
+        or attributes.get("email_verified", "").lower() != "true"
+        or not name
+    ):
+        logger.warning(
+            "auth_event=signup_identity_rejected category=unverified_or_mismatched_profile"
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Verify your Cognito email and profile before requesting access.",
+        )
+    return {"sub": claims.sub, "email": email, "name": name}
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)
 def health_check():
     return {"status": "healthy", "service": "support-desk-backend"}
+
+
+@app.get("/internal/auth/whoami")
+def whoami(user=Depends(get_current_user)):
+    """Return the authoritative identity for the presented token.
+
+    Used by the public API tier (in Cognito/dual AUTH_MODE) to resolve the
+    DB-backed role and email after it has cryptographically validated a Cognito
+    access token, since a Cognito access token does not carry those claims.
+    `get_current_user` already enforces token validity, the cognito_sub->DB
+    mapping, and is_active, so this endpoint simply echoes the trusted result.
+    """
+    return user
+
+
+@app.post("/internal/profile/phone")
+def sync_verified_profile_phone(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Persist only the phone number Cognito confirms as verified for this user."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+    access_token = authorization[7:].strip()
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+
+    member = db.query(TeamMember).filter(TeamMember.id == user["id"]).first()
+    if not member or not member.is_active or not member.cognito_sub:
+        raise HTTPException(status_code=403, detail="Your account is not linked or authorized.")
+
+    try:
+        response = boto3.client(
+            "cognito-idp",
+            region_name=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION"),
+        ).get_user(AccessToken=access_token)
+    except ClientError as error:
+        code = str(error.response.get("Error", {}).get("Code", ""))
+        logger.warning(
+            "auth_event=phone_profile_sync_failed category=cognito_get_user error_code=%s",
+            code or "unknown",
+        )
+        if code in {"NotAuthorizedException", "UserNotFoundException"}:
+            raise HTTPException(status_code=401, detail="Invalid or expired sign-in token.") from error
+        raise HTTPException(
+            status_code=503, detail="Phone verification could not be confirmed right now."
+        ) from error
+    except Exception as error:
+        logger.error(
+            "auth_event=phone_profile_sync_failed category=cognito_get_user error_type=%s",
+            type(error).__name__,
+        )
+        raise HTTPException(
+            status_code=503, detail="Phone verification could not be confirmed right now."
+        ) from error
+
+    attributes = {
+        item["Name"]: item["Value"]
+        for item in response.get("UserAttributes", [])
+        if isinstance(item, dict) and "Name" in item and "Value" in item
+    }
+    phone_number = attributes.get("phone_number", "")
+    if attributes.get("sub") != member.cognito_sub:
+        logger.warning("auth_event=phone_profile_sync_failed category=subject_mismatch")
+        raise HTTPException(status_code=403, detail="Your account is not linked or authorized.")
+    if attributes.get("phone_number_verified", "").lower() != "true":
+        raise HTTPException(status_code=409, detail="Verify your phone number before saving it.")
+    if (
+        len(phone_number) < 9
+        or len(phone_number) > 16
+        or not phone_number.startswith("+")
+        or not phone_number[1:].isdigit()
+        or phone_number[1] == "0"
+    ):
+        logger.warning("auth_event=phone_profile_sync_failed category=invalid_verified_phone")
+        raise HTTPException(status_code=400, detail="Cognito returned an invalid verified phone number.")
+
+    member.phone_number = phone_number
+    db.commit()
+    logger.info("auth_event=phone_profile_sync_succeeded member_id=%s", member.id)
+    return {"phone_number": member.phone_number, "phone_verified": True}
+
+
+@app.post("/internal/profile/mfa")
+def sync_profile_mfa_status(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the verified software-token MFA preference for this user."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+    access_token = authorization[7:].strip()
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+
+    member = db.query(TeamMember).filter(TeamMember.id == user["id"]).first()
+    if not member or not member.is_active or not member.cognito_sub:
+        raise HTTPException(status_code=403, detail="Your account is not linked or authorized.")
+
+    try:
+        response = boto3.client(
+            "cognito-idp",
+            region_name=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION"),
+        ).get_user(AccessToken=access_token)
+    except ClientError as error:
+        code = str(error.response.get("Error", {}).get("Code", ""))
+        logger.warning(
+            "auth_event=mfa_profile_sync_failed category=cognito_get_user error_code=%s",
+            code or "unknown",
+        )
+        if code in {"NotAuthorizedException", "UserNotFoundException"}:
+            raise HTTPException(status_code=401, detail="Invalid or expired sign-in token.") from error
+        raise HTTPException(
+            status_code=503, detail="Authenticator status could not be confirmed right now."
+        ) from error
+    except Exception as error:
+        logger.error(
+            "auth_event=mfa_profile_sync_failed category=cognito_get_user error_type=%s",
+            type(error).__name__,
+        )
+        raise HTTPException(
+            status_code=503, detail="Authenticator status could not be confirmed right now."
+        ) from error
+
+    attributes = {
+        item["Name"]: item["Value"]
+        for item in response.get("UserAttributes", [])
+        if isinstance(item, dict) and "Name" in item and "Value" in item
+    }
+    if attributes.get("sub") != member.cognito_sub:
+        logger.warning("auth_event=mfa_profile_sync_failed category=subject_mismatch")
+        raise HTTPException(status_code=403, detail="Your account is not linked or authorized.")
+
+    mfa_enabled = "SOFTWARE_TOKEN_MFA" in response.get("UserMFASettingList", [])
+    logger.info(
+        "auth_event=mfa_profile_sync_succeeded member_id=%s mfa_enabled=%s",
+        member.id,
+        mfa_enabled,
+    )
+    return {"mfa_enabled": mfa_enabled}
 
 
 @app.post("/internal/auth/login")
@@ -424,39 +653,91 @@ def get_dashboard(
 
 
 @app.post("/internal/access-requests", status_code=status.HTTP_201_CREATED)
-def create_access_request(payload: Dict[str, Any], db: Session = Depends(get_db)):
-    name = str(payload.get("name", "")).strip()
-    email = str(payload.get("email", "")).strip().lower()
-    password = payload.get("password")
-    role = payload.get("role")
-    message = str(payload.get("message", "")).strip() or None
-    if not name or len(name) > 100 or "@" not in email:
-        raise HTTPException(status_code=400, detail="A valid name and email are required.")
-    if not isinstance(password, str) or len(password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
-    if role not in {"employee", "support"}:
-        raise HTTPException(status_code=400, detail="Access can only be requested for Staff or Support Team roles.")
-    if message and len(message) > 1000:
-        raise HTTPException(status_code=400, detail="Message must be 1000 characters or fewer.")
-    existing_member = db.query(TeamMember).filter(TeamMember.email.ilike(email)).first()
+def create_access_request(
+    payload: AccessRequestPayload,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+    access_token = authorization[7:].strip()
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+
+    identity = get_verified_signup_identity(access_token)
+    name = identity["name"]
+    email = identity["email"]
+    cognito_sub = identity["sub"]
+    role = payload.role
+    message = payload.message.strip() or None if payload.message else None
+    existing_member = db.query(TeamMember).filter(
+        (TeamMember.cognito_sub == cognito_sub) | TeamMember.email.ilike(email)
+    ).first()
     if existing_member:
         raise HTTPException(status_code=409, detail="An account with this email already exists.")
-    pending_request = db.query(AccessRequest).filter(
-        AccessRequest.email.ilike(email), AccessRequest.status == "pending"
-    ).first()
-    if pending_request:
-        raise HTTPException(status_code=409, detail="An access request for this email is already pending.")
+
+    existing_request = db.query(AccessRequest).filter(
+        AccessRequest.email.ilike(email)
+    ).order_by(AccessRequest.id.desc()).first()
+    if existing_request:
+        if (
+            existing_request.status == "pending"
+            and existing_request.cognito_sub == cognito_sub
+            and existing_request.email.strip().lower() == email
+            and existing_request.role == role
+        ):
+            return access_request_response(existing_request)
+        if (
+            existing_request.status == "pending"
+            and existing_request.cognito_sub is None
+            and existing_request.role == role
+        ):
+            existing_request.cognito_sub = cognito_sub
+            existing_request.name = name
+            try:
+                db.commit()
+            except IntegrityError as error:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail="An access request for this account already exists.",
+                ) from error
+            db.refresh(existing_request)
+            return access_request_response(existing_request)
+        raise HTTPException(
+            status_code=409,
+            detail="An access request for this account already exists or was reviewed.",
+        )
 
     request = AccessRequest(
         name=name,
         email=email,
+        cognito_sub=cognito_sub,
         role=role,
-        password_hash=hash_password(password),
+        password_hash=None,
         message=message,
     )
     db.add(request)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        existing_request = db.query(AccessRequest).filter(
+            AccessRequest.cognito_sub == cognito_sub
+        ).first()
+        if (
+            existing_request
+            and existing_request.status == "pending"
+            and existing_request.email.strip().lower() == email
+            and existing_request.role == role
+        ):
+            return access_request_response(existing_request)
+        raise HTTPException(
+            status_code=409,
+            detail="An access request for this account already exists.",
+        ) from error
     db.refresh(request)
+    logger.info("auth_event=access_request_created role=%s", role)
     return access_request_response(request)
 
 
@@ -490,58 +771,59 @@ def review_access_request(
     request = db.query(AccessRequest).filter(AccessRequest.id == access_request_id).first()
     if not request:
         raise HTTPException(status_code=404, detail="Access request not found.")
+    if request.status == "approved" and decision == "approved":
+        return access_request_response(request, "already_approved")
     if request.status != "pending":
         raise HTTPException(status_code=409, detail="This access request has already been reviewed.")
     if decision == "approved":
-        existing_member = db.query(TeamMember).filter(TeamMember.email.ilike(request.email)).first()
+        if not request.cognito_sub:
+            raise HTTPException(
+                status_code=409,
+                detail="The requester must verify their Cognito email before approval.",
+            )
+        if request.role not in {"employee", "support"}:
+            raise HTTPException(status_code=409, detail="This request has an invalid role.")
+        existing_member = db.query(TeamMember).filter(
+            (TeamMember.cognito_sub == request.cognito_sub)
+            | TeamMember.email.ilike(request.email)
+        ).first()
         if existing_member:
-            raise HTTPException(status_code=409, detail="An account with this email already exists.")
-        db.add(TeamMember(
-            name=request.name,
-            email=request.email,
-            role=request.role,
-            password_hash=request.password_hash,
-            is_active=True,
-        ))
+            raise HTTPException(
+                status_code=409,
+                detail="This email or Cognito identity is already linked to an application account.",
+            )
+        db.add(
+            TeamMember(
+                name=request.name,
+                email=request.email.strip().lower(),
+                role=request.role,
+                password_hash=None,
+                cognito_sub=request.cognito_sub,
+                is_active=True,
+            )
+        )
     request.status = decision
     request.reviewed_at = datetime.now(timezone.utc)
     request.reviewed_by = user["id"]
     request.review_note = review_note
-    db.commit()
-    db.refresh(request)
-    return access_request_response(request)
-
-
-@app.post("/internal/team-members", status_code=status.HTTP_201_CREATED)
-def create_team_member(
-    payload: Dict[str, Any],
-    db: Session = Depends(get_db),
-    user=Depends(require_roles("admin")),
-):
-    from app.repositories.request_repository import RequestRepository
-    from app.services.request_service import RequestService
-
-    name = str(payload.get("name", "")).strip()
-    email = str(payload.get("email", "")).strip().lower()
-    password = payload.get("password")
-    role = payload.get("role")
-    if not name or len(name) > 100 or "@" not in email:
-        raise HTTPException(status_code=400, detail="A valid name and email are required.")
-    if not isinstance(password, str) or len(password) < 12:
-        raise HTTPException(status_code=400, detail="Password must be at least 12 characters.")
-    if role not in {"admin", "support", "employee"}:
-        raise HTTPException(status_code=400, detail="Role must be admin, support, or employee.")
     try:
-        member = RequestService(RequestRepository(db)).create_team_member({
-            "name": name,
-            "email": email,
-            "role": role,
-            "password_hash": hash_password(password),
-            "is_active": True,
-        })
-        return member_response(member)
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="The account changed while this request was being reviewed.",
+        ) from error
+    db.refresh(request)
+    logger.info(
+        "auth_event=access_request_reviewed decision=%s role=%s",
+        decision,
+        request.role,
+    )
+    return access_request_response(
+        request,
+        "approved_and_linked" if decision == "approved" else None,
+    )
 
 
 @app.patch("/internal/team-members/{member_id}")
@@ -557,6 +839,14 @@ def update_team_member(
     allowed = {"name", "email", "role", "is_active", "password"}
     if not payload or set(payload) - allowed:
         raise HTTPException(status_code=400, detail="Provide valid account fields to update.")
+    member = db.query(TeamMember).filter(TeamMember.id == member_id).first()
+    if member is None:
+        raise HTTPException(status_code=404, detail=f"Team member {member_id} not found.")
+    if member.cognito_provisioning_id and member.cognito_sub is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This account has a pending Cognito invitation. Retry provisioning before editing it.",
+        )
     fields = {}
     if "name" in payload:
         name = str(payload["name"]).strip()

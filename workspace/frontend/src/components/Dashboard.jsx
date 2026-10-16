@@ -181,19 +181,30 @@ function Dashboard({ user }) {
 
   return (
     <div className="dashboard-container">
-      <div className="dashboard-meta">
-        <span className="dashboard-live-dot" aria-hidden="true" />
-        <span>
-          Live · auto-refreshes every {Math.round(POLL_INTERVAL_MS / 1000)}s
-          {lastUpdated ? ` · updated ${lastUpdated.toLocaleTimeString()}` : ''}
-        </span>
-        {error && <span className="dashboard-stale">Reconnecting…</span>}
+      <div className="dashboard-heading">
+        <div>
+          <span className="section-label">{isAdmin ? 'ADMINISTRATION' : 'OPERATIONS'}</span>
+          <h2>{isAdmin ? 'Admin dashboard' : 'Operations dashboard'}</h2>
+          <p>{isAdmin
+            ? 'Monitor support activity, staff access, and incoming requests.'
+            : 'Track support activity and work across the ticket queue.'}</p>
+        </div>
+        <div className="dashboard-meta" role="status" aria-live="polite">
+          <span className="dashboard-live-dot" aria-hidden="true" />
+          <span>
+            Live · refreshes every {Math.round(POLL_INTERVAL_MS / 1000)}s
+            {lastUpdated ? ` · updated ${lastUpdated.toLocaleTimeString()}` : ''}
+          </span>
+          {error && <span className="dashboard-stale">Reconnecting…</span>}
+        </div>
       </div>
 
       <p className="dashboard-hint">Select any metric, chart item, or day to drill into the related tickets.</p>
 
       {/* Headline counters */}
-      <div className="feature-grid">
+      <section className="dashboard-section" aria-labelledby="dashboard-ticket-overview">
+      <h3 id="dashboard-ticket-overview">Ticket overview</h3>
+      <div className="feature-grid dashboard-kpis">
         <KpiCard icon="📊" label="Total Tickets" value={summary.total}
           onClick={() => openTickets('All Tickets', {})} />
 
@@ -209,24 +220,35 @@ function Dashboard({ user }) {
         <KpiCard icon="🕓" label="Unassigned" value={summary.unassigned}
           onClick={() => openTickets('Unassigned Tickets', { assignment: 'unassigned' }, null, null, 'Tickets awaiting assignment')} />
       </div>
+      </section>
 
       {/* Admin-only context, powered by existing APIs */}
       {isAdmin && (
-        <>
-          <div className="form-divider"></div>
-          <h3>Administration</h3>
-          <div className="feature-grid">
+        <section className="dashboard-section admin-dashboard-section" aria-labelledby="dashboard-admin-overview">
+          <div className="dashboard-section-heading">
+            <div>
+              <h3 id="dashboard-admin-overview">Team and access</h3>
+              <p>Review access requests and manage active staff accounts.</p>
+            </div>
+          </div>
+          <div className="feature-grid dashboard-kpis">
             <KpiCard icon="📨" label="Pending Access Requests" value={admin.pendingAccess ?? '—'}
               onClick={() => setDrill({ kind: 'access' })} />
             <KpiCard icon="👥" label="Active Staff" value={admin.activeStaff ?? '—'}
               onClick={() => setDrill({ kind: 'staff' })} />
           </div>
-        </>
+        </section>
       )}
 
       {/* Breakdown charts */}
-      <div className="form-divider"></div>
-      <div className="chart-grid">
+      <section className="dashboard-section" aria-labelledby="dashboard-breakdown">
+      <div className="dashboard-section-heading">
+        <div>
+          <h3 id="dashboard-breakdown">Ticket breakdown</h3>
+          <p>Explore tickets by status, priority, category, or assignee.</p>
+        </div>
+      </div>
+      <div className="chart-grid dashboard-chart-grid">
         <BarChart title="Tickets by Status" data={summary.by_status}
           onSelect={(label) => openTickets(`${label} Tickets`, { status: label }, 'status', label)} />
 
@@ -249,9 +271,17 @@ function Dashboard({ user }) {
             )
           }} />
       </div>
+      </section>
 
       {/* Trend */}
-      <div className="chart-grid">
+      <section className="dashboard-section" aria-labelledby="dashboard-trend">
+      <div className="dashboard-section-heading">
+        <div>
+          <h3 id="dashboard-trend">Recent activity</h3>
+          <p>New tickets created over the past seven days.</p>
+        </div>
+      </div>
+      <div className="chart-grid dashboard-chart-grid">
         <Sparkline title="New Tickets (last 7 days)" series={summary.recent}
           onSelect={(date) => openTickets(
             `Tickets created on ${date}`,
@@ -260,6 +290,7 @@ function Dashboard({ user }) {
             date,
           )} />
       </div>
+      </section>
     </div>
   )
 }

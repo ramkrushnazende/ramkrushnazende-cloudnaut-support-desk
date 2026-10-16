@@ -200,23 +200,35 @@ function TicketDetail({ ticketId, onBack, user }) {
 
   return (
     <div className="ticket-detail-container">
+      <header className="ticket-detail-header">
+        <div className="ticket-detail-toolbar">
+          <button type="button" className="close-button" onClick={onBack}>← Back to list</button>
+          <span className="ticket-reference">Ticket #{ticket.id}</span>
+        </div>
+        <div className="ticket-detail-title-row">
+          <div>
+            <span className="ticket-detail-eyebrow">TICKET DETAILS</span>
+            <h2>{ticket.title}</h2>
+          </div>
+          <span className={`ticket-detail-status badge-status-${ticket.status.toLowerCase().replace(/\s+/g, '-')}`}>
+            {ticket.status}
+          </span>
+        </div>
+        <p className="ticket-description">{ticket.description}</p>
+      </header>
 
-      <button type="button" className="close-button" onClick={onBack}>← Back to list</button>
-
-      <h2>{ticket.title}</h2>
-      <p>{ticket.description}</p>
-
-      <div className="ticket-meta-grid">
-        <div><strong>Ticket ID:</strong> #{ticket.id}</div>
-        <div><strong>Requester:</strong> {ticket.requester_name} ({ticket.requester_email})</div>
-        <div><strong>Category:</strong> {ticket.category}</div>
-        <div><strong>Priority:</strong> {ticket.priority}</div>
-        <div><strong>Status:</strong> {ticket.status}</div>
-        <div><strong>Assigned to:</strong> {assignedMember?.name || ticket.assigned_to_name || (ticket.assigned_to ? 'Assigned team member' : 'Unassigned')}</div>
-        <div><strong>Due date:</strong> {ticket.due_date || 'None set'}</div>
-        <div><strong>Created:</strong> {ticket.created_at ? new Date(ticket.created_at).toLocaleString() : '-'}</div>
-        <div><strong>Updated:</strong> {ticket.updated_at ? new Date(ticket.updated_at).toLocaleString() : '-'}</div>
-      </div>
+      <section className="ticket-information" aria-labelledby="ticket-information-heading">
+        <h3 id="ticket-information-heading">Request information</h3>
+        <dl className="ticket-meta-grid">
+          <div><dt>Requester</dt><dd>{ticket.requester_name} ({ticket.requester_email})</dd></div>
+          <div><dt>Category</dt><dd>{ticket.category}</dd></div>
+          <div><dt>Priority</dt><dd>{ticket.priority}</dd></div>
+          <div><dt>Assigned to</dt><dd>{assignedMember?.name || ticket.assigned_to_name || (ticket.assigned_to ? 'Assigned team member' : 'Unassigned')}</dd></div>
+          <div><dt>Due date</dt><dd>{ticket.due_date || 'None set'}</dd></div>
+          <div><dt>Created</dt><dd>{ticket.created_at ? new Date(ticket.created_at).toLocaleString() : '-'}</dd></div>
+          <div><dt>Last updated</dt><dd>{ticket.updated_at ? new Date(ticket.updated_at).toLocaleString() : '-'}</dd></div>
+        </dl>
+      </section>
 
       {actionError && (
         <div className="error-box">
@@ -227,7 +239,9 @@ function TicketDetail({ ticketId, onBack, user }) {
 
       <TicketAttachments requestId={ticketId} />
 
-      {user.role !== 'employee' && <div className="form-row">
+      {user.role !== 'employee' && <section className="ticket-action-panel" aria-label="Ticket workflow">
+        <h3>Ticket workflow</h3>
+        <div className="form-row">
         <div className="form-group">
           <label htmlFor="assign">Assign to</label>
           <select
@@ -261,7 +275,8 @@ function TicketDetail({ ticketId, onBack, user }) {
             ))}
           </select>
         </div>
-      </div>}
+        </div>
+      </section>}
 
       {user.role !== 'employee' && <div className="ticket-details-editor">
         {!showTicketEditor ? (
@@ -305,7 +320,8 @@ function TicketDetail({ ticketId, onBack, user }) {
 
       <div className="form-divider"></div>
 
-      <h3>{user.role === 'employee' ? 'Progress Updates' : 'Progress Notes'}</h3>
+      <section className="ticket-updates-section" aria-labelledby="ticket-updates-heading">
+      <h3 id="ticket-updates-heading">{user.role === 'employee' ? 'Progress Updates' : 'Progress Notes'}</h3>
 
       {user.role !== 'employee' && <>
       <form onSubmit={handleAddNote} className="ticket-form">
@@ -357,6 +373,7 @@ function TicketDetail({ ticketId, onBack, user }) {
           </li>
         ))}
       </ul>
+      </section>
 
       {user.role !== 'employee' && <>
       <div className="form-divider"></div>

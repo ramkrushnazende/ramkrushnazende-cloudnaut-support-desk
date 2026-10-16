@@ -43,6 +43,7 @@ services:
     container_name: app_backend
     environment:
       - DATABASE_URL=postgresql+psycopg2://cloudnaut:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env before starting}@db:5432/cloudnaut_db
+      - DB_SSLMODE=disable
       - API_SERVICE_URL=http://api:4000
       - AUTH_SECRET_KEY=${AUTH_SECRET_KEY:?Set AUTH_SECRET_KEY in .env before starting}
       - SMTP_HOST=${SMTP_HOST:-}

@@ -14,6 +14,19 @@ class TeamMember(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     role = Column(String(20), nullable=False, default="support", server_default="support")
     password_hash = Column(String(255), nullable=True)
+    # Cognito identity mapping (Phase 1). Nullable so existing users keep NULL
+    # until linked to a Cognito identity; unique index allows multiple NULLs
+    # while rejecting duplicate non-null subjects.
+    cognito_sub = Column(String(255), nullable=True, unique=True, index=True)
+    # Legacy invitation-recovery key retained for existing rows; public
+    # registration maps identities through AccessRequest.cognito_sub instead.
+    cognito_provisioning_id = Column(String(32), nullable=True, unique=True)
+    # Optional E.164 contact number (profile UI + Cognito phone_number attribute).
+    # Not an authorization input.
+    phone_number = Column(String(32), nullable=True)
+    # Display-only mirror of the user's Cognito TOTP MFA status. Cognito is the
+    # source of truth; this is never trusted for an auth/authz decision.
+    mfa_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
 
     # Relationships
     assigned_requests = relationship("SupportRequest", back_populates="assignee")
@@ -29,6 +42,9 @@ class AccessRequest(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     email = Column(String(255), nullable=False, index=True)
+    # Set only after the registrant completes Cognito email verification and
+    # presents a cryptographically validated access token.
+    cognito_sub = Column(String(255), nullable=True, unique=True, index=True)
     role = Column(String(20), nullable=False)
     password_hash = Column(String(255), nullable=True)
     message = Column(Text, nullable=True)

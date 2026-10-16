@@ -1,9 +1,8 @@
-import io
 import os
 
-from minio import Minio
-from minio.error import MinioException, S3Error
-from urllib3.exceptions import HTTPError
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 
 class StorageConfigurationError(RuntimeError):
@@ -18,70 +17,97 @@ class ObjectNotFoundError(ObjectStorageError):
     pass
 
 
-class ObjectStorage:
-    def __init__(self):
-        endpoint = os.getenv("MINIO_ENDPOINT", "minio:9000")
-        access_key = os.getenv("MINIO_ACCESS_KEY")
-        secret_key = os.getenv("MINIO_SECRET_KEY")
-        if not access_key or not secret_key:
-            raise StorageConfigurationError(
-                "MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be configured."
-            )
+# S3 error codes that mean "the object key does not exist".
+_NOT_FOUND_CODES = {"NoSuchKey", "NoSuchObject", "404", "NotFound"}
 
-        self.bucket = os.getenv("MINIO_BUCKET", "support-attachments")
-        self.client = Minio(
-            endpoint,
-            access_key=access_key,
-            secret_key=secret_key,
-            secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
-        )
+
+class ObjectStorage:
+    """Amazon S3-backed object storage for ticket attachments.
+
+    Credentials come from the standard AWS provider chain (EC2 instance role in
+    production); no access keys are read from the application. The bucket is
+    created out-of-band (CDK), so this class never creates it. The public
+    interface (ensure_bucket / upload / download / delete) and the exception
+    hierarchy are unchanged so AttachmentService needs no modification.
+    """
+
+    def __init__(self):
+        self.bucket = os.getenv("S3_BUCKET")
+        if not self.bucket:
+            raise StorageConfigurationError("S3_BUCKET must be configured.")
+        self._region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+        # The boto3 client is created lazily on first use so that constructing
+        # ObjectStorage never resolves credentials. In production the EC2
+        # instance role supplies credentials via the AWS provider chain at the
+        # moment of the first S3 call.
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            try:
+                self._client = boto3.client(
+                    "s3",
+                    region_name=self._region,
+                    config=Config(
+                        retries={"max_attempts": 3, "mode": "standard"},
+                        connect_timeout=5,
+                        read_timeout=30,
+                        signature_version="s3v4",
+                    ),
+                )
+            except (BotoCoreError, ValueError) as error:
+                raise StorageConfigurationError(
+                    "Could not initialize the S3 client."
+                ) from error
+        return self._client
+
+    @client.setter
+    def client(self, value):
+        # Allows tests to inject a fake S3 client (as the previous MinIO code did).
+        self._client = value
 
     def ensure_bucket(self):
-        try:
-            if not self.client.bucket_exists(self.bucket):
-                try:
-                    self.client.make_bucket(self.bucket)
-                except S3Error as error:
-                    if error.code not in {
-                        "BucketAlreadyExists",
-                        "BucketAlreadyOwnedByYou",
-                    }:
-                        raise
-        except (MinioException, HTTPError) as error:
-            raise ObjectStorageError("Could not initialize the MinIO bucket.") from error
+        """No-op by contract: the bucket is provisioned by infrastructure (CDK).
+
+        Kept so callers (AttachmentService.upload) don't change. We do NOT
+        create the bucket at runtime and intentionally avoid a HeadBucket call
+        so no extra IAM permission (s3:ListBucket) is required for uploads.
+        """
+        return None
 
     def upload(self, object_key: str, content: bytes, content_type: str):
         try:
             self.client.put_object(
-                self.bucket,
-                object_key,
-                io.BytesIO(content),
-                length=len(content),
-                content_type=content_type,
+                Bucket=self.bucket,
+                Key=object_key,
+                Body=content,
+                ContentType=content_type,
             )
-        except (MinioException, HTTPError) as error:
-            raise ObjectStorageError("Could not upload the object to MinIO.") from error
+        except (ClientError, BotoCoreError) as error:
+            raise ObjectStorageError("Could not upload the object to S3.") from error
 
     def download(self, object_key: str) -> bytes:
         try:
-            response = self.client.get_object(self.bucket, object_key)
-        except S3Error as error:
-            if error.code in {"NoSuchKey", "NoSuchObject"}:
-                raise ObjectNotFoundError("The MinIO object does not exist.") from error
-            raise ObjectStorageError("Could not retrieve the object from MinIO.") from error
-        except (MinioException, HTTPError) as error:
-            raise ObjectStorageError("Could not retrieve the object from MinIO.") from error
+            response = self.client.get_object(Bucket=self.bucket, Key=object_key)
+        except ClientError as error:
+            code = error.response.get("Error", {}).get("Code", "")
+            if code in _NOT_FOUND_CODES:
+                raise ObjectNotFoundError("The S3 object does not exist.") from error
+            raise ObjectStorageError("Could not retrieve the object from S3.") from error
+        except BotoCoreError as error:
+            raise ObjectStorageError("Could not retrieve the object from S3.") from error
 
+        body = response["Body"]
         try:
-            return response.read()
-        except (MinioException, HTTPError) as error:
-            raise ObjectStorageError("Could not read the object from MinIO.") from error
+            return body.read()
+        except (BotoCoreError, OSError) as error:
+            raise ObjectStorageError("Could not read the object from S3.") from error
         finally:
-            response.close()
-            response.release_conn()
+            body.close()
 
     def delete(self, object_key: str):
         try:
-            self.client.remove_object(self.bucket, object_key)
-        except (MinioException, HTTPError) as error:
-            raise ObjectStorageError("Could not delete the object from MinIO.") from error
+            self.client.delete_object(Bucket=self.bucket, Key=object_key)
+        except (ClientError, BotoCoreError) as error:
+            raise ObjectStorageError("Could not delete the object from S3.") from error

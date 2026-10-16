@@ -1,0 +1,16 @@
+*.js
+!jest.config.js
+*.d.ts
+node_modules
+
+# CDK asset staging / synth output
+cdk.out
+dist
+
+# Local CDK context overrides
+cdk.context.json
+
+# Logs / env
+*.log
+.env
+.env.*
