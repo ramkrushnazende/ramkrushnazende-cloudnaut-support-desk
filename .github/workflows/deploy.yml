@@ -1,0 +1,245 @@
+name: Deploy (production)
+
+# Production deployment. Runs ONLY on pushes to main (post-merge) or manual
+# dispatch. Authenticates to AWS via GitHub OIDC (no long-lived keys), builds +
+# pushes SHA-tagged images, deploys to the existing EC2 host via SSM, publishes
+# the frontend to S3 + invalidates CloudFront, and health-checks the result.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Minimum permissions: OIDC token + read repo. No write-back to the repo.
+permissions:
+  id-token: write
+  contents: read
+
+# Never let two production deploys race.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-south-1
+  AWS_ACCOUNT: '771675725990'
+  API_REPO: cloudnaut-support-desk-api
+  BACKEND_REPO: cloudnaut-support-desk-backend
+  INSTANCE_ID: i-0f35e03d7af81e88d
+  BACKEND_STACK: CloudnautSupportDeskStack
+  FRONTEND_STACK: CloudnautSupportDeskFrontendStack
+  DISTRIBUTION_ID: E2YDO517JF7MQP
+  # Public Cognito identifiers (safe in the frontend bundle / CDK context).
+  COGNITO_USER_POOL_ID: ap-south-1_9btqlmF3a
+  COGNITO_APP_CLIENT_ID: 5vg4ssrhma5kacpdns3830mg1r
+
+jobs:
+  # ------------------------------------------------------------------ #
+  # 1. Build + push the API and backend images, tagged with the commit SHA.
+  # ------------------------------------------------------------------ #
+  build-and-push:
+    name: Build & push images (ECR)
+    runs-on: ubuntu-latest
+    environment: production
+    outputs:
+      sha: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+
+      - name: Build & push backend (context = repo root)
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          docker build -f workspace/backend/Dockerfile \
+            -t "$REGISTRY/$BACKEND_REPO:${{ github.sha }}" \
+            -t "$REGISTRY/$BACKEND_REPO:latest" .
+          docker push "$REGISTRY/$BACKEND_REPO:${{ github.sha }}"
+          docker push "$REGISTRY/$BACKEND_REPO:latest"
+
+      - name: Build & push api (context = workspace/api)
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          docker build -f workspace/api/Dockerfile \
+            -t "$REGISTRY/$API_REPO:${{ github.sha }}" \
+            -t "$REGISTRY/$API_REPO:latest" workspace/api
+          docker push "$REGISTRY/$API_REPO:${{ github.sha }}"
+          docker push "$REGISTRY/$API_REPO:latest"
+
+  # ------------------------------------------------------------------ #
+  # 2. Deploy the two containers to the existing EC2 host via SSM.
+  #    Pins the on-instance compose to the exact commit SHA (traceable),
+  #    then pulls + restarts. Preserves /opt/cloudnaut/app.env (secrets,
+  #    DB, S3, AUTH_MODE) — never rewritten here.
+  # ------------------------------------------------------------------ #
+  deploy-backend:
+    name: Deploy API + backend (SSM)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: production
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Send SSM deploy command
+        id: ssm
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          REGISTRY="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          API_IMG="$REGISTRY/$API_REPO:$SHA"
+          BE_IMG="$REGISTRY/$BACKEND_REPO:$SHA"
+
+          # Remote script: login to ECR, pin compose to the SHA images, pull,
+          # restart via the existing systemd unit, verify both /health endpoints.
+          read -r -d '' REMOTE <<EOF || true
+          set -euo pipefail
+          cd /opt/cloudnaut
+          cp docker-compose.prod.yml docker-compose.prod.yml.bak
+          aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${REGISTRY}
+          sed -i -E "s#image: .*/${BACKEND_REPO}:.*#image: ${BE_IMG}#" docker-compose.prod.yml
+          sed -i -E "s#image: .*/${API_REPO}:.*#image: ${API_IMG}#" docker-compose.prod.yml
+          docker compose -f docker-compose.prod.yml pull
+          systemctl restart cloudnaut.service
+          # Health checks (api :4000, backend :8001) with retries.
+          ok=0
+          for i in \$(seq 1 20); do
+            if curl -fsS http://localhost:4000/health >/dev/null && \
+               docker exec app_backend python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health',timeout=3).status==200 else 1)"; then
+              ok=1; break
+            fi
+            sleep 6
+          done
+          if [ "\$ok" != "1" ]; then
+            echo "HEALTHCHECK FAILED — rolling back";
+            cp docker-compose.prod.yml.bak docker-compose.prod.yml
+            docker compose -f docker-compose.prod.yml pull || true
+            systemctl restart cloudnaut.service || true
+            exit 1
+          fi
+          echo "DEPLOY OK sha=${SHA}"
+          EOF
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy ${SHA}" \
+            --parameters "commands=[$(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' <<<"$REMOTE")]" \
+            --query "Command.CommandId" --output text)
+          echo "command_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+
+          # Wait for completion.
+          aws ssm wait command-executed --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" || true
+          STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query Status --output text)
+          echo "SSM status: $STATUS"
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text | tail -20
+          if [ "$STATUS" != "Success" ]; then
+            echo "::error::SSM deploy failed (status=$STATUS). See sanitized output above."
+            aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query StandardErrorContent --output text | tail -20
+            exit 1
+          fi
+
+      - name: Verify public API Gateway health
+        run: |
+          API_URL=$(aws cloudformation describe-stacks --stack-name "$BACKEND_STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
+          echo "API URL: $API_URL"
+          for i in $(seq 1 10); do
+            if curl -fsS "$API_URL/health" >/dev/null; then echo "API Gateway healthy"; exit 0; fi
+            sleep 6
+          done
+          echo "::error::API Gateway /health did not return 200"; exit 1
+
+  # ------------------------------------------------------------------ #
+  # 3. Build + publish the frontend to S3, invalidate CloudFront.
+  # ------------------------------------------------------------------ #
+  deploy-frontend:
+    name: Deploy frontend (S3 + CloudFront)
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    environment: production
+    defaults:
+      run:
+        working-directory: workspace/frontend
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: workspace/frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+      - name: Build (prod env is in .env.production — all public VITE_* values)
+        run: npm run build
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve the frontend bucket from stack outputs
+        id: bucket
+        run: |
+          B=$(aws cloudformation describe-stacks --stack-name "$FRONTEND_STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" --output text)
+          test -n "$B" && echo "name=$B" >> "$GITHUB_OUTPUT"
+
+      - name: Upload hashed assets (long cache) then index.html (no-cache)
+        run: |
+          BUCKET="${{ steps.bucket.outputs.name }}"
+          # Hashed, immutable assets: long cache. --delete is scoped to this
+          # dedicated, CDK-managed site bucket (verified from stack output).
+          aws s3 sync dist/ "s3://$BUCKET/" --delete \
+            --cache-control "public,max-age=31536000,immutable" \
+            --exclude "index.html"
+          aws s3 cp dist/index.html "s3://$BUCKET/index.html" \
+            --cache-control "no-cache,no-store,must-revalidate"
+
+      - name: Invalidate CloudFront and wait
+        run: |
+          INV=$(aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" \
+            --paths "/*" --query "Invalidation.Id" --output text)
+          aws cloudfront wait invalidation-completed --distribution-id "$DISTRIBUTION_ID" --id "$INV"
+
+      - name: Smoke-test the live frontend
+        run: |
+          URL=$(aws cloudformation describe-stacks --stack-name "$FRONTEND_STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='FrontendUrl'].OutputValue" --output text)
+          echo "Frontend URL: $URL"
+          curl -fsS "$URL" | grep -qi "<div id=\"root\"" && echo "SPA served OK" || (echo "::error::SPA root not found"; exit 1)
+
+  # ------------------------------------------------------------------ #
+  # 4. Record what was deployed.
+  # ------------------------------------------------------------------ #
+  summary:
+    name: Deployment summary
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-backend, deploy-frontend]
+    steps:
+      - run: |
+          {
+            echo "## Deployment complete";
+            echo "- Commit SHA: \`${{ github.sha }}\`";
+            echo "- API/backend image tag: \`${{ github.sha }}\`";
+            echo "- Instance: \`${{ env.INSTANCE_ID }}\` (SSM)";
+            echo "- CloudFront: \`${{ env.DISTRIBUTION_ID }}\`";
+          } >> "$GITHUB_STEP_SUMMARY"

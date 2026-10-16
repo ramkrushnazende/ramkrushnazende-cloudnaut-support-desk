@@ -1,0 +1,136 @@
+name: CI
+
+# Runs on PRs targeting main and on pushes to main. No AWS credentials are used
+# here — CI only tests and builds. Deployment lives in deploy.yml.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only least-privilege read access to the repo contents.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-api-db:
+    name: Python tests (backend, api, database)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cloudnaut
+          POSTGRES_PASSWORD: ci_test_password
+          POSTGRES_DB: cloudnaut_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cloudnaut -d cloudnaut_db"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Local, disposable CI database only — never a production DB.
+      DATABASE_URL: postgresql+psycopg2://cloudnaut:ci_test_password@localhost:5432/cloudnaut_db
+      DB_SSLMODE: disable
+      AUTH_SECRET_KEY: ci-test-secret-key-not-a-real-secret-32b
+      PYTHONPATH: ${{ github.workspace }}/workspace:${{ github.workspace }}/workspace/backend
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Install backend + api dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r workspace/backend/requirements.txt
+          pip install -r workspace/api/requirements.txt
+
+      - name: Backend tests
+        working-directory: workspace/backend
+        run: pytest tests/ -q
+
+      - name: API tests
+        working-directory: workspace/api
+        env:
+          PYTHONPATH: ${{ github.workspace }}/workspace/api
+        run: pytest tests/ -q
+
+      - name: Database tests
+        working-directory: workspace/database
+        env:
+          PYTHONPATH: ${{ github.workspace }}/workspace
+        run: pytest tests/ -q
+
+      - name: Validate Alembic migrations (offline, no production DB)
+        working-directory: workspace/database
+        env:
+          PYTHONPATH: ${{ github.workspace }}/workspace
+        run: |
+          # Applies the full migration chain to the DISPOSABLE CI Postgres and
+          # confirms a single head. Never touches a production database.
+          alembic -c alembic.ini upgrade head
+          alembic -c alembic.ini heads
+
+  frontend:
+    name: Frontend (vitest + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workspace/frontend
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: workspace/frontend/package-lock.json
+
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+
+  cdk:
+    name: CDK (test + synth)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - run: npm ci
+      - name: TypeScript build
+        run: npm run build
+      - name: Infrastructure tests
+        run: npx jest
+      - name: CDK synth backend stack (no AWS calls)
+        # Synthesise the backend stack only. The frontend stack stages
+        # workspace/frontend/dist as an asset, which does not exist in this job
+        # (it is built in the deploy workflow), so it is synthesised there.
+        # Cognito IDs are PUBLIC values passed as context. Dummy account/region
+        # keep this offline; real values come from the deploy OIDC session.
+        run: >-
+          npx cdk synth CloudnautSupportDeskStack
+          -c cognitoUserPoolId=ap-south-1_9btqlmF3a
+          -c cognitoAppClientId=5vg4ssrhma5kacpdns3830mg1r
+        env:
+          # Real account id (public, not a secret) so the cached availability-zone
+          # lookup in cdk.context.json resolves offline — no AWS creds needed.
+          CDK_DEFAULT_ACCOUNT: '771675725990'
+          CDK_DEFAULT_REGION: ap-south-1

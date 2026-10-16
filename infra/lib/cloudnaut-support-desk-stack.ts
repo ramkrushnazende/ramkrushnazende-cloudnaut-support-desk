@@ -14,6 +14,7 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { Construct } from 'constructs';
+import { GitHubOidcDeployRole } from './github-oidc';
 
 /**
  * Simple, inline configuration for this learning deployment. No multi-env
@@ -369,8 +370,14 @@ export class CloudnautSupportDeskStack extends Stack {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       instanceType: new ec2.InstanceType('t8i.small'), // x86_64, matches the Docker images
-      machineImage: ec2.MachineImage.latestAmazonLinux2023({
-        cpuType: ec2.AmazonLinuxCpuType.X86_64,
+      // Pin the AMI so routine `cdk deploy`s do NOT replace the running
+      // instance every time Amazon publishes a new AL2023 image.
+      // `latestAmazonLinux2023()` resolves to a moving SSM parameter, which
+      // forces an instance replacement (downtime + new public DNS) on drift.
+      // Default to the currently-running AMI; override intentionally to upgrade
+      // the OS with:  -c appAmiId=ami-xxxx  (that will replace the instance).
+      machineImage: ec2.MachineImage.genericLinux({
+        [region]: this.node.tryGetContext('appAmiId') ?? 'ami-0d5beb611c244cba5',
       }),
       securityGroup: appSg,
       role,
@@ -571,6 +578,35 @@ export class CloudnautSupportDeskStack extends Stack {
     );
 
     // ---------------------------------------------------------------------
+    // 8.7 GitHub Actions OIDC deploy role (CI/CD) — least privilege, no keys.
+    //
+    //   Lets the GitHub Actions pipeline assume a scoped role via OIDC to run
+    //   `cdk deploy` (via the bootstrap roles), push ECR images, deploy to the
+    //   app instance over SSM, publish the frontend to S3, and invalidate
+    //   CloudFront. Trust is restricted to the repo + main branch.
+    //
+    //   `createGithubOidcProvider` context flag: true by default (no provider
+    //   exists in this account yet). Set to "false" if the account already has
+    //   a token.actions.githubusercontent.com provider, so CDK references it
+    //   instead of failing to create a duplicate.
+    // ---------------------------------------------------------------------
+    const createGithubOidcProvider =
+      this.node.tryGetContext('createGithubOidcProvider') !== 'false';
+    const githubRepo =
+      this.node.tryGetContext('githubRepo') ??
+      'ramkrushnazende/ramkrushnazende-cloudnaut-support-desk';
+
+    const githubDeploy = new GitHubOidcDeployRole(this, 'GitHubOidcDeploy', {
+      repo: githubRepo,
+      branch: 'main',
+      account,
+      region,
+      ecrRepos: [props.apiEcrRepo, props.backendEcrRepo],
+      instanceId: instance.instanceId,
+      createOidcProvider: createGithubOidcProvider,
+    });
+
+    // ---------------------------------------------------------------------
     // 9. Outputs (no secret values).
     // ---------------------------------------------------------------------
     new CfnOutput(this, 'ApiUrl', {
@@ -605,6 +641,10 @@ export class CloudnautSupportDeskStack extends Stack {
     new CfnOutput(this, 'CognitoAppClientId', {
       value: userPoolClient.userPoolClientId,
       description: 'Amazon Cognito App Client ID (public SPA client, no secret)',
+    });
+    new CfnOutput(this, 'GitHubActionsDeployRoleArn', {
+      value: githubDeploy.role.roleArn,
+      description: 'IAM role ARN for GitHub Actions to assume via OIDC (set as AWS_DEPLOY_ROLE_ARN)',
     });
     new CfnOutput(this, 'CognitoMigrationRoleArn', {
       value: migrationRole.roleArn,

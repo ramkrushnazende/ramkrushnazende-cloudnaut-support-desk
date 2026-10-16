@@ -1,0 +1,52 @@
+# Root .dockerignore — applies to the BACKEND image build (context = repo root,
+# see workspace/backend/Dockerfile). Keeps secrets, local data, and bulky or
+# irrelevant paths out of the build context and image layers.
+
+# Secrets / local env (NEVER bake into an image)
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+# VCS / CI
+.git
+.gitignore
+.github
+
+# Local backups and generated test data
+backups/
+*.sql
+*.dump
+Cloudnaut_Support_Desk_Test_Cases.xlsx
+
+# Python caches / virtualenvs / test caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Node / frontend (not part of the backend image)
+**/node_modules/
+workspace/frontend/dist/
+
+# CDK / infra (not part of app images)
+infra/cdk.out/
+infra/node_modules/
+infra/dist/
+
+# Local compose / docs / editor
+docker-compose*.yml
+docs/
+*.md
+.vscode/
+.idea/
+.codegraph/
+
+# Other service build dirs not needed by the backend image
+workspace/minio/
+workspace/api/
