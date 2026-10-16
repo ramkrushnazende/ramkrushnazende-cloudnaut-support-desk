@@ -123,12 +123,10 @@ jobs:
         # Synthesise the backend stack only. The frontend stack stages
         # workspace/frontend/dist as an asset, which does not exist in this job
         # (it is built in the deploy workflow), so it is synthesised there.
-        # Cognito IDs are PUBLIC values passed as context. Dummy account/region
-        # keep this offline; real values come from the deploy OIDC session.
-        run: >-
-          npx cdk synth CloudnautSupportDeskStack
-          -c cognitoUserPoolId=ap-south-1_9btqlmF3a
-          -c cognitoAppClientId=5vg4ssrhma5kacpdns3830mg1r
+        # The PUBLIC Cognito IDs come from cdk.json context (no fragile -c
+        # flags). The real account id resolves the cached availability-zone
+        # lookup in cdk.context.json so this stays offline (no AWS creds).
+        run: npx cdk synth CloudnautSupportDeskStack
         env:
           # Real account id (public, not a secret) so the cached availability-zone
           # lookup in cdk.context.json resolves offline — no AWS creds needed.
