@@ -1,0 +1,30 @@
+# API image build context = workspace/api (see workspace/api/Dockerfile: COPY . .).
+# Keep secrets, caches, and tests out of the image layers.
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# Python caches / virtualenvs / test caches
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tests are not needed at runtime in the image
+tests/
+
+# VCS / editor
+.git
+.gitignore
+.vscode/
+.idea/
+
+# Docs
+*.md

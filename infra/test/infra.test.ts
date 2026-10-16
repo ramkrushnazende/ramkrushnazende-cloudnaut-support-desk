@@ -329,6 +329,52 @@ test('Cognito IDs are exported as outputs and no Cognito secret is output', () =
 
 
 // ---------------------------------------------------------------------------
+// GitHub Actions OIDC deploy role (CI/CD)
+// ---------------------------------------------------------------------------
+
+test('creates a GitHub OIDC provider and a scoped deploy role', () => {
+  const t = synth();
+  t.resourceCountIs('Custom::AWSCDKOpenIdConnectProvider', 1);
+  // Trust policy restricts to the sts audience and the repo+main branch.
+  t.hasResourceProperties('AWS::IAM::Role', {
+    RoleName: 'github-actions-cloudnaut-deploy',
+    AssumeRolePolicyDocument: Match.objectLike({
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: 'sts:AssumeRoleWithWebIdentity',
+          Condition: Match.objectLike({
+            StringEquals: Match.objectLike({
+              'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+            }),
+            StringLike: Match.objectLike({
+              'token.actions.githubusercontent.com:sub':
+                'repo:ramkrushnazende/ramkrushnazende-cloudnaut-support-desk:ref:refs/heads/main',
+            }),
+          }),
+        }),
+      ]),
+    }),
+  });
+});
+
+test('deploy role has no wildcard admin and exposes its ARN as an output', () => {
+  const t = synth();
+  // The deploy role must not grant blanket admin.
+  const policies = t.findResources('AWS::IAM::Policy');
+  const actions: string[] = [];
+  for (const res of Object.values(policies)) {
+    for (const s of (res as any).Properties.PolicyDocument.Statement) {
+      const a = Array.isArray(s.Action) ? s.Action : [s.Action];
+      actions.push(...a);
+    }
+  }
+  expect(actions).not.toContain('*');
+  expect(actions).toEqual(expect.arrayContaining(['ecr:PutImage', 'ssm:SendCommand']));
+  expect(Object.keys(t.findOutputs('GitHubActionsDeployRoleArn')).length).toBe(1);
+});
+
+
+// ---------------------------------------------------------------------------
 // Frontend stack (separate from the backend stack)
 // ---------------------------------------------------------------------------
 
