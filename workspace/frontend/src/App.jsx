@@ -23,11 +23,6 @@ import './App.css'
 function App() {
   const resetToken = new URLSearchParams(window.location.search).get('reset_token')
   const cognitoMode = isCognitoMode()
-  const [theme, setTheme] = useState(() => {
-    const saved = localStorage.getItem('supportDeskTheme')
-    if (saved === 'light' || saved === 'dark') return saved
-    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-  })
   const [session, setSession] = useState(() => {
     // Legacy mode restores synchronously from localStorage. Cognito mode
     // restores asynchronously from the SDK session (see the effect below), so
@@ -127,43 +122,17 @@ function App() {
     goHome()
   }
 
-  useEffect(() => {
-    localStorage.setItem('supportDeskTheme', theme)
-    document.documentElement.dataset.theme = theme
-  }, [theme])
-
   if (createdTicket) {
     return (
-      <div className="app-shell" data-theme={theme}>
-        <main className="app-container">
-          <div className="topbar">
-            <div className="topbar-brand">
-              <img className="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />
-              <span>
-                <strong>Cloudnaut</strong>
-                <small>Support Desk</small>
-              </span>
-            </div>
-            <button
-              type="button"
-              className="theme-toggle"
-              onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')}
-              aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
-              title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
-            >
-              <span aria-hidden="true">{theme === 'light' ? '◐' : '☼'}</span>
-              {theme === 'light' ? 'Dark mode' : 'Light mode'}
-            </button>
-          </div>
-          <TicketSuccess
-            ticket={createdTicket}
-            user={session?.user}
-            pendingFiles={failedTicketAttachments}
-            attachmentErrors={attachmentUploadErrors}
-            onCreateAnother={handleCreateAnother}
-            onGoHome={goHome}
-          />
-        </main>
+      <div className="app-shell">
+        <TicketSuccess
+          ticket={createdTicket}
+          user={session?.user}
+          pendingFiles={failedTicketAttachments}
+          attachmentErrors={attachmentUploadErrors}
+          onCreateAnother={handleCreateAnother}
+          onGoHome={goHome}
+        />
       </div>
     )
   }
@@ -171,7 +140,7 @@ function App() {
   const showingWelcome = !showForm && !showList && !showDashboard && !showTeam && !showAccessRequests && !showRequestTracker && !showProfile && !selectedTicketId
 
   return (
-    <div className="app-shell" data-theme={theme}>
+    <div className="app-shell">
 
       <div className="background-glow glow-one"></div>
       <div className="background-glow glow-two"></div>
@@ -180,29 +149,9 @@ function App() {
 
         <header className="hero-section">
 
-          <div className="topbar">
-            <div className="topbar-brand">
-              <img className="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />
-              <span>
-                <strong>Cloudnaut</strong>
-                <small>Support Desk</small>
-              </span>
-            </div>
-            <button
-              type="button"
-              className="theme-toggle"
-              onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')}
-              aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
-              title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
-            >
-              <span aria-hidden="true">{theme === 'light' ? '◐' : '☼'}</span>
-              {theme === 'light' ? 'Dark mode' : 'Light mode'}
-            </button>
-          </div>
-
           <div className="brand-badge">
             <span className="status-dot"></span>
-            Enterprise support workspace
+            Internal Support System
           </div>
 
           <h1>
