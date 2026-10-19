@@ -153,14 +153,25 @@ jobs:
             exit 1
           fi
 
+          # CDK may update its non-destructive analytics metadata with a
+          # Conditional replacement. Allow only that exact metadata update;
+          # continue blocking every other conditional/true replacement and
+          # every resource removal/deletion.
           BLOCKED=$(jq -r '
             (.Changes // [])[]
             | .ResourceChange
             | select(
-                .Replacement == "True"
-                or .Replacement == "Conditional"
-                or .Action == "Remove"
-                or .Action == "Delete"
+                (
+                  .Replacement == "True"
+                  or .Replacement == "Conditional"
+                  or .Action == "Remove"
+                  or .Action == "Delete"
+                )
+                and not (
+                  .ResourceType == "AWS::CDK::Metadata"
+                  and .Action == "Modify"
+                  and .Replacement == "Conditional"
+                )
               )
             | [
                 (.LogicalResourceId // "unknown"),
