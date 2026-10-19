@@ -11,6 +11,7 @@ from schemas.history import HistoryResponse
 from schemas.note import NoteCreate, NoteResponse, ProgressUpdateResponse
 from schemas.password_reset import PasswordResetConfirm, PasswordResetRequest
 from schemas.request import TicketCreate, TicketResponse, TicketUpdate
+from schemas.security import MfaPolicyResponse, MfaPolicyUpdate
 from schemas.team_members import (
     LoginRequest,
     TeamMemberResponse,
@@ -412,6 +413,34 @@ async def get_team_members(
     )
 
     return data
+
+
+@team_router.get(
+    "/security/mfa-policy",
+    response_model=MfaPolicyResponse,
+)
+async def get_mfa_policy(user=Depends(require_roles("admin"))):
+    return await backend_request(
+        "GET",
+        "/internal/security/mfa-policy",
+        access_token=user["token"],
+    )
+
+
+@team_router.patch(
+    "/security/mfa-policy",
+    response_model=MfaPolicyResponse,
+)
+async def update_mfa_policy(
+    policy: MfaPolicyUpdate,
+    user=Depends(require_roles("admin")),
+):
+    return await backend_request(
+        "PATCH",
+        "/internal/security/mfa-policy",
+        json=policy.model_dump(mode="json"),
+        access_token=user["token"],
+    )
 
 
 @team_router.post("/auth/login")

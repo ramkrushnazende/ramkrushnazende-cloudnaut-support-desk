@@ -4945,3 +4945,64 @@ body {
     gap: 6px;
   }
 }
+.mfa-policy-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+
+.mfa-policy-card p {
+  max-width: 680px;
+  margin: 0;
+}
+
+.mfa-policy-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  color: #cfe1ff;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.mfa-policy-toggle input {
+  width: 20px;
+  height: 20px;
+  accent-color: #5e91e8;
+}
+
+.mfa-enrollment-gate {
+  max-width: 620px;
+  margin: 48px auto 0;
+  text-align: center;
+}
+
+.mfa-enrollment-gate form {
+  text-align: left;
+}
+
+.mfa-enrollment-gate .mfa-qr {
+  display: block;
+  margin: 20px auto;
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px;
+}
+
+.mfa-signout-button {
+  margin-top: 14px;
+}
+
+@media (max-width: 640px) {
+  .mfa-policy-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mfa-policy-toggle {
+    align-self: flex-start;
+  }
+}

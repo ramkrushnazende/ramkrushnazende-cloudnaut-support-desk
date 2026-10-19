@@ -32,6 +32,18 @@ class TeamMember(Base):
     assigned_requests = relationship("SupportRequest", back_populates="assignee")
 
 
+class SecuritySetting(Base):
+    __tablename__ = "security_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_security_settings_singleton"),
+    )
+
+    id = Column(Integer, primary_key=True, default=1)
+    require_staff_mfa = Column(Boolean, nullable=False, default=False, server_default="false")
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by = Column(Integer, ForeignKey("team_members.id"), nullable=True)
+
+
 class AccessRequest(Base):
     __tablename__ = "access_requests"
     __table_args__ = (

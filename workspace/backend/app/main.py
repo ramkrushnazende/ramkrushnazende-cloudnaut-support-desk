@@ -10,21 +10,30 @@ from urllib.parse import quote
 import boto3
 from botocore.exceptions import ClientError
 from fastapi import FastAPI, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from typing import Any, Dict, Literal
 
-from app.auth import create_access_token, get_current_user, hash_password, require_roles, verify_password
+from app.auth import (
+    create_access_token,
+    get_current_user,
+    hash_password,
+    mfa_requirement_status,
+    require_mfa,
+    require_roles,
+    verify_password,
+)
 from app.cognito import (
     CognitoConfigurationError,
     CognitoTokenError,
     CognitoVerificationUnavailable,
+    get_auth_mode,
     get_verifier,
 )
 from app.routers.attachments import router as attachments_router
 from database.app.database import get_db
-from database.app.models import AccessRequest, PasswordResetToken, TeamMember
+from database.app.models import AccessRequest, PasswordResetToken, SecuritySetting, TeamMember
 from app.services.ticket_notifications import (
     TicketNotificationError,
     send_ticket_confirmation_email,
@@ -173,16 +182,89 @@ def health_check():
 
 
 @app.get("/internal/auth/whoami")
-def whoami(user=Depends(get_current_user)):
-    """Return the authoritative identity for the presented token.
+def whoami(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return identity plus server-computed MFA enforcement state.
 
-    Used by the public API tier (in Cognito/dual AUTH_MODE) to resolve the
-    DB-backed role and email after it has cryptographically validated a Cognito
-    access token, since a Cognito access token does not carry those claims.
-    `get_current_user` already enforces token validity, the cognito_sub->DB
-    mapping, and is_active, so this endpoint simply echoes the trusted result.
+    This endpoint remains available before enrollment so the SPA can render the
+    enrollment gate. Business endpoints use require_mfa and cannot be bypassed
+    by changing frontend state.
     """
-    return user
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+    access_token = authorization[7:].strip()
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+    return {**user, **mfa_requirement_status(user, access_token, db)}
+
+
+class MfaPolicyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    require_staff_mfa: bool
+
+
+def _mfa_policy_response(setting: SecuritySetting) -> dict:
+    return {
+        "require_staff_mfa": bool(setting.require_staff_mfa),
+        "updated_at": setting.updated_at,
+        "updated_by": setting.updated_by,
+    }
+
+
+@app.get("/internal/security/mfa-policy")
+def get_mfa_policy(
+    db: Session = Depends(get_db),
+    user=Depends(require_roles("admin")),
+):
+    setting = db.query(SecuritySetting).filter(SecuritySetting.id == 1).first()
+    if setting is None:
+        setting = SecuritySetting(id=1, require_staff_mfa=False, updated_by=user["id"])
+        db.add(setting)
+        db.commit()
+        db.refresh(setting)
+    return _mfa_policy_response(setting)
+
+
+@app.patch("/internal/security/mfa-policy")
+def update_mfa_policy(
+    payload: MfaPolicyUpdate,
+    db: Session = Depends(get_db),
+    user=Depends(require_roles("admin")),
+):
+    if payload.require_staff_mfa and get_auth_mode() == "legacy":
+        raise HTTPException(
+            status_code=409,
+            detail="MFA enforcement requires Cognito authentication mode.",
+        )
+    if payload.require_staff_mfa:
+        unlinked = db.query(TeamMember).filter(
+            TeamMember.is_active.is_(True),
+            TeamMember.role.in_(["employee", "support"]),
+            TeamMember.cognito_sub.is_(None),
+        ).count()
+        if unlinked:
+            raise HTTPException(
+                status_code=409,
+                detail="Link all active employees and support staff to Cognito before enabling MFA enforcement.",
+            )
+    setting = db.query(SecuritySetting).filter(SecuritySetting.id == 1).first()
+    if setting is None:
+        setting = SecuritySetting(id=1)
+        db.add(setting)
+    setting.require_staff_mfa = payload.require_staff_mfa
+    setting.updated_by = user["id"]
+    db.commit()
+    db.refresh(setting)
+    logger.info(
+        "security_event=mfa_policy_updated admin_id=%s require_staff_mfa=%s",
+        user["id"],
+        payload.require_staff_mfa,
+    )
+    return _mfa_policy_response(setting)
 
 
 @app.post("/internal/profile/phone")
@@ -427,7 +509,7 @@ def create_internal_request(
 def get_internal_request(
     request_id: int,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user=Depends(require_mfa),
 ):
     from app.repositories.request_repository import RequestRepository
     from app.services.request_service import RequestService
@@ -497,7 +579,7 @@ def list_internal_requests(
     sort_by: str = Query(default="created_at"),
     sort_order: str = Query(default="desc"),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user=Depends(require_mfa),
 ):
     from app.repositories.request_repository import RequestRepository
     from app.services.request_service import RequestService
@@ -627,7 +709,7 @@ def add_request_note(
 def get_request_notes(
     request_id: int,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user=Depends(require_mfa),
 ):
     from app.repositories.request_repository import RequestRepository
     from app.services.request_service import RequestService

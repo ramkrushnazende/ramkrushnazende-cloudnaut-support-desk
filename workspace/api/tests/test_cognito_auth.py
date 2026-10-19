@@ -469,3 +469,38 @@ def test_team_member_creation_route_is_removed():
         json={"name": "New Support", "email": "support@example.com", "role": "support"},
     )
     assert response.status_code == 405
+
+
+
+def test_admin_mfa_policy_proxy_preserves_backend_policy(monkeypatch):
+    whoami_body = {"id": 5, "email": "admin@x.com", "name": "Admin", "role": "admin"}
+    policy_body = {"require_staff_mfa": True, "updated_at": None, "updated_by": 5}
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self.headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, path, headers=None):
+            return _FakeResponse(200, whoami_body)
+
+        async def request(self, method, path, params=None, json=None, headers=None):
+            assert method == "PATCH"
+            assert path == "/internal/security/mfa-policy"
+            assert json == {"require_staff_mfa": True}
+            return _FakeResponse(200, policy_body)
+
+    monkeypatch.setattr(auth.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(requests_router.httpx, "AsyncClient", _FakeAsyncClient)
+    response = client.patch(
+        "/security/mfa-policy",
+        headers=_auth(_token()),
+        json={"require_staff_mfa": True},
+    )
+    assert response.status_code == 200
+    assert response.json()["require_staff_mfa"] is True

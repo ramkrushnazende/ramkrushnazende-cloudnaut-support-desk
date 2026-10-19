@@ -144,6 +144,7 @@ export class GitHubOidcDeployRole extends Construct {
         resources: [
           `arn:aws:cloudformation:${props.region}:${props.account}:stack/CloudnautSupportDesk*/*`,
           `arn:aws:cloudformation:${props.region}:${props.account}:stack/CDKToolkit/*`,
+          `arn:aws:cloudformation:${props.region}:${props.account}:changeSet/ci-guard-*/*`,
         ],
       }),
     );
@@ -162,7 +163,16 @@ export class GitHubOidcDeployRole extends Construct {
     this.role.addToPolicy(
       new iam.PolicyStatement({
         sid: 'FrontendS3Publish',
-        actions: ['s3:PutObject', 's3:DeleteObject', 's3:ListBucket', 's3:GetBucketLocation'],
+        actions: [
+          's3:PutObject',
+          's3:GetObject',
+          's3:DeleteObject',
+          's3:AbortMultipartUpload',
+          's3:ListMultipartUploadParts',
+          's3:ListBucket',
+          's3:ListBucketMultipartUploads',
+          's3:GetBucketLocation',
+        ],
         resources: [
           `arn:aws:s3:::cloudnautsupportdeskfrontend*`,
           `arn:aws:s3:::cloudnautsupportdeskfrontend*/*`,

@@ -1,16 +1,20 @@
 import logging
+import logging
 import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import boto3
 import jwt
+from botocore.exceptions import ClientError
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pwdlib import PasswordHash
 
 from app.cognito import (
     AUTH_MODE_COGNITO,
+    AUTH_MODE_DUAL,
     AUTH_MODE_LEGACY,
     CognitoConfigurationError,
     CognitoTokenError,
@@ -20,7 +24,7 @@ from app.cognito import (
     looks_like_cognito_token,
 )
 from database.app.database import get_db
-from database.app.models import TeamMember
+from database.app.models import SecuritySetting, TeamMember
 
 
 JWT_SECRET = os.getenv("AUTH_SECRET_KEY", "")
@@ -86,6 +90,69 @@ def _member_identity(member: "TeamMember") -> dict:
         "role": member.role,
         "phone_number": member.phone_number,
         "mfa_enabled": member.mfa_enabled,
+    }
+
+
+def _staff_mfa_required(db) -> bool:
+    setting = db.query(SecuritySetting).filter(SecuritySetting.id == 1).first()
+    return bool(setting and setting.require_staff_mfa)
+
+
+def cognito_mfa_enabled(access_token: str, expected_sub: str | None = None) -> bool:
+    """Return live Cognito TOTP enrollment state for a validated session.
+
+    This deliberately calls Cognito GetUser instead of trusting the database
+    display mirror or browser state. All failures are surfaced fail-closed.
+    """
+    if not access_token:
+        raise _unauthorized("Sign-in required.")
+    try:
+        response = boto3.client(
+            "cognito-idp",
+            region_name=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION"),
+        ).get_user(AccessToken=access_token)
+    except ClientError as error:
+        code = str(error.response.get("Error", {}).get("Code", ""))
+        if code in {"NotAuthorizedException", "UserNotFoundException"}:
+            raise _unauthorized("Invalid or expired sign-in token.") from error
+        logger.error("auth_event=mfa_status_failure category=cognito_get_user error_code=%s", code or "unknown")
+        raise HTTPException(status_code=503, detail="MFA status is temporarily unavailable.") from error
+    except Exception as error:
+        logger.error("auth_event=mfa_status_failure category=cognito_get_user error_type=%s", type(error).__name__)
+        raise HTTPException(status_code=503, detail="MFA status is temporarily unavailable.") from error
+
+    attributes = {
+        item["Name"]: item["Value"]
+        for item in response.get("UserAttributes", [])
+        if isinstance(item, dict) and "Name" in item and "Value" in item
+    }
+    if expected_sub and attributes.get("sub") != expected_sub:
+        logger.warning("auth_event=mfa_status_failure category=subject_mismatch")
+        raise HTTPException(status_code=403, detail="Your account is not linked or authorized.")
+    return "SOFTWARE_TOKEN_MFA" in response.get("UserMFASettingList", [])
+
+
+def mfa_requirement_status(user: dict, access_token: str, db) -> dict:
+    enforced = _staff_mfa_required(db)
+    staff_member = user.get("role") in {"employee", "support"}
+    member = db.query(TeamMember).filter(TeamMember.id == user.get("id")).first()
+    cognito_sub = member.cognito_sub if member else None
+    if not enforced or not staff_member:
+        return {
+            "mfa_required": False,
+            "mfa_enrolled": bool(user.get("mfa_enabled")) if user.get("role") != "admin" else None,
+            "mfa_enforcement_enabled": enforced,
+        }
+    if get_auth_mode() == AUTH_MODE_LEGACY or not cognito_sub:
+        raise HTTPException(
+            status_code=503,
+            detail="MFA enforcement is unavailable for this account configuration.",
+        )
+    enrolled = cognito_mfa_enabled(access_token, expected_sub=cognito_sub)
+    return {
+        "mfa_required": not enrolled,
+        "mfa_enrolled": enrolled,
+        "mfa_enforcement_enabled": True,
     }
 
 
@@ -198,8 +265,31 @@ def get_current_user(
     return _authenticate_legacy(token, db)
 
 
+def require_mfa(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    if user.get("role") == "admin" or not _staff_mfa_required(db):
+        return user
+    member = db.query(TeamMember).filter(TeamMember.id == user.get("id")).first()
+    if get_auth_mode() == AUTH_MODE_LEGACY or not member or not member.cognito_sub:
+        raise HTTPException(
+            status_code=403,
+            detail="MFA enforcement requires a linked Cognito account.",
+        )
+    enrolled = cognito_mfa_enabled(credentials.credentials if credentials else "", expected_sub=member.cognito_sub)
+    if not enrolled:
+        raise HTTPException(
+            status_code=403,
+            detail="Complete MFA enrollment before accessing support data.",
+            headers={"X-MFA-Required": "true"},
+        )
+    return user
+
+
 def require_roles(*allowed_roles):
-    def dependency(user=Depends(get_current_user)):
+    def dependency(user=Depends(require_mfa)):
         if user["role"] not in allowed_roles:
             raise HTTPException(status_code=403, detail="You do not have permission for this action.")
         return user

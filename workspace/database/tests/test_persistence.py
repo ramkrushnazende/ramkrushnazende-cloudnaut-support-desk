@@ -1,5 +1,5 @@
 import pytest
-from database.app.models import TeamMember, SupportRequest, HistoryEvent, TicketNote
+from database.app.models import TeamMember, SupportRequest, HistoryEvent, TicketNote, SecuritySetting
 
 
 def test_create_team_member(db_session):
@@ -242,3 +242,21 @@ def test_existing_columns_unaffected_by_phone_mfa(db_session):
     assert saved.cognito_sub is None
     assert saved.phone_number is None
     assert saved.mfa_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Runtime security policy
+# ---------------------------------------------------------------------------
+def test_staff_mfa_policy_defaults_disabled_and_is_singleton(db_session):
+    setting = SecuritySetting(id=1)
+    db_session.add(setting)
+    db_session.commit()
+    saved = db_session.query(SecuritySetting).one()
+    assert saved.require_staff_mfa is False
+    assert saved.id == 1
+    db_session.expunge(saved)
+
+    db_session.add(SecuritySetting(id=1, require_staff_mfa=True))
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()

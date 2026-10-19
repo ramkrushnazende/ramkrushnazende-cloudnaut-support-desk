@@ -249,6 +249,16 @@ export class CloudnautSupportDeskStack extends Stack {
         ],
       }),
     );
+    // Cognito GetUser is used by backend MFA enforcement to verify the live
+    // TOTP enrollment state for the presented access token. It is read-only;
+    // no Cognito provisioning/admin permissions are granted to the runtime role.
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'CognitoReadOwnUser',
+        actions: ['cognito-idp:GetUser'],
+        resources: ['*'],
+      }),
+    );
     // SES send (email is optional/deferred; empty from-address means unused).
     role.addToPolicy(
       new iam.PolicyStatement({

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import LoginForm from './components/LoginForm'
 import CognitoLoginForm from './components/CognitoLoginForm'
 import ProfilePanel from './components/ProfilePanel'
+import MfaEnrollmentGate from './components/MfaEnrollmentGate'
 import { isCognitoMode } from './cognito/config'
 import { getAccessToken, signOut as cognitoSignOut } from './cognito/cognitoAuth'
 import { resolveIdentity } from './cognito/session'
@@ -32,6 +33,7 @@ function App() {
     const user = localStorage.getItem('supportDeskUser')
     return token && user ? { token, user: JSON.parse(user) } : null
   })
+  const [restoringSession, setRestoringSession] = useState(cognitoMode)
 
   // Cognito session restoration: if the SDK still holds a valid session on
   // load, resolve the DB-authoritative identity and restore the session.
@@ -39,14 +41,16 @@ function App() {
     if (!cognitoMode) return
     let active = true
     ;(async () => {
-      const token = await getAccessToken()
-      if (!token || !active) return
       try {
+        const token = await getAccessToken()
+        if (!token || !active) return
         const user = await resolveIdentity()
         if (active) setSession({ token, user })
       } catch {
         // Invalid/expired session or no linked profile: stay logged out.
         if (active) setSession(null)
+      } finally {
+        if (active) setRestoringSession(false)
       }
     })()
     return () => { active = false }
@@ -120,6 +124,30 @@ function App() {
     setShowForgotPassword(false)
     setSelectedRole(null)
     goHome()
+  }
+
+  if (restoringSession) {
+    return (
+      <div className="app-shell">
+        <main className="app-container"><section className="welcome-card"><p>Restoring your secure session…</p></section></main>
+      </div>
+    )
+  }
+
+  if (session?.user?.mfa_required && cognitoMode) {
+    const completeRequiredMfa = async () => {
+      const user = await resolveIdentity()
+      if (user.mfa_required) throw new Error('MFA enrollment is not complete yet.')
+      const token = await getAccessToken()
+      setSession((current) => current ? { ...current, user, token: token || current.token } : current)
+    }
+    return (
+      <div className="app-shell">
+        <main className="app-container">
+          <MfaEnrollmentGate user={session.user} onComplete={completeRequiredMfa} onSignOut={handleLogout} />
+        </main>
+      </div>
+    )
   }
 
   if (createdTicket) {

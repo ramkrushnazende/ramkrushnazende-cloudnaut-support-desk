@@ -22,7 +22,7 @@ import app.cognito as cognito
 import app.main as backend_main
 from app.main import app
 from database.app.database import get_db
-from database.app.models import Base, TeamMember
+from database.app.models import Base, SecuritySetting, TeamMember
 
 
 REGION = "ap-south-1"
@@ -498,3 +498,80 @@ def test_legacy_mode_rejects_cognito_token(db, client, monkeypatch):
     # A Cognito RS256 token is not a valid HS256 app token -> 401.
     res = client.get("/internal/auth/whoami", headers=_auth(_token(sub="cognito-sub-abc")))
     assert res.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Admin-controlled MFA enforcement
+# ---------------------------------------------------------------------------
+def _enable_staff_mfa(db):
+    db.add(SecuritySetting(id=1, require_staff_mfa=True))
+    db.commit()
+
+
+def _fake_mfa_client(monkeypatch, *, enrolled):
+    class FakeCognito:
+        def get_user(self, *, AccessToken):
+            return {
+                "UserAttributes": [{"Name": "sub", "Value": "cognito-sub-abc"}],
+                "UserMFASettingList": ["SOFTWARE_TOKEN_MFA"] if enrolled else [],
+            }
+
+    monkeypatch.setattr(auth.boto3, "client", lambda service, region_name=None: FakeCognito())
+
+
+def test_admin_can_enable_staff_mfa_policy(db, client):
+    _add_member(db, cognito_sub="admin-sub", role="admin", email="admin-policy@x.com")
+    response = client.patch(
+        "/internal/security/mfa-policy",
+        headers=_auth(_token(sub="admin-sub")),
+        json={"require_staff_mfa": True},
+    )
+    assert response.status_code == 200
+    assert response.json()["require_staff_mfa"] is True
+
+
+def test_mfa_policy_rejects_enablement_with_unlinked_staff(db, client):
+    _add_member(db, cognito_sub="admin-sub", role="admin", email="admin-unlinked@x.com")
+    _add_member(db, cognito_sub=None, role="support", email="unlinked-support@x.com")
+    response = client.patch(
+        "/internal/security/mfa-policy",
+        headers=_auth(_token(sub="admin-sub")),
+        json={"require_staff_mfa": True},
+    )
+    assert response.status_code == 409
+    assert "Link all active" in response.json()["detail"]
+
+
+def test_enforced_unenrolled_staff_is_blocked_from_protected_data(monkeypatch, db, client):
+    _add_member(db, cognito_sub="cognito-sub-abc", role="support")
+    _enable_staff_mfa(db)
+    _fake_mfa_client(monkeypatch, enrolled=False)
+    response = client.get("/internal/dashboard", headers=_auth(_token()))
+    assert response.status_code == 403
+    assert response.headers["X-MFA-Required"] == "true"
+
+
+def test_enforced_enrolled_staff_can_access_protected_data(monkeypatch, db, client):
+    _add_member(db, cognito_sub="cognito-sub-abc", role="support")
+    _enable_staff_mfa(db)
+    _fake_mfa_client(monkeypatch, enrolled=True)
+    response = client.get("/internal/dashboard", headers=_auth(_token()))
+    assert response.status_code == 200
+
+
+def test_whoami_reports_mfa_required_before_enrollment(monkeypatch, db, client):
+    _add_member(db, cognito_sub="cognito-sub-abc", role="employee")
+    _enable_staff_mfa(db)
+    _fake_mfa_client(monkeypatch, enrolled=False)
+    response = client.get("/internal/auth/whoami", headers=_auth(_token()))
+    assert response.status_code == 200
+    assert response.json()["mfa_required"] is True
+    assert response.json()["mfa_enforcement_enabled"] is True
+
+
+def test_admin_bypasses_staff_mfa_enforcement(monkeypatch, db, client):
+    _add_member(db, cognito_sub="admin-sub", role="admin", email="admin-bypass@x.com")
+    _enable_staff_mfa(db)
+    monkeypatch.setattr(auth.boto3, "client", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("admin must not call Cognito GetUser")))
+    response = client.get("/internal/dashboard", headers=_auth(_token(sub="admin-sub")))
+    assert response.status_code == 200

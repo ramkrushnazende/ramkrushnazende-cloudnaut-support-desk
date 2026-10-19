@@ -20,6 +20,9 @@ function ProfilePanel({ user, onClose, onPhoneVerified }) {
   const [phone, setPhone] = useState(user?.phone_number || '')
   const [savedPhone, setSavedPhone] = useState(user?.phone_number || '')
   const [mfaEnabled, setMfaEnabled] = useState(Boolean(user?.mfa_enabled))
+  const mfaPolicyRequired = Boolean(
+    user?.mfa_enforcement_enabled && ['employee', 'support'].includes(user?.role),
+  )
   const [mfaStatusLoading, setMfaStatusLoading] = useState(true)
   const [phoneCode, setPhoneCode] = useState('')
   const [phoneStep, setPhoneStep] = useState('idle') // idle | codeSent | verified
@@ -274,10 +277,13 @@ function ProfilePanel({ user, onClose, onPhoneVerified }) {
                 <button type="button" className="submit-button" disabled={busy || mfaStatusLoading} onClick={startTotp}>
                   {mfaStatusLoading ? 'Checking authenticator…' : mfaEnabled ? 'Reset authenticator' : 'Set up authenticator'}
                 </button>
-                {mfaEnabled && !mfaStatusLoading && (
+                {mfaEnabled && !mfaStatusLoading && !mfaPolicyRequired && (
                   <button type="button" className="secondary-button" disabled={busy} onClick={resetTotp}>
                     Disable authenticator
                   </button>
+                )}
+                {mfaEnabled && !mfaStatusLoading && mfaPolicyRequired && (
+                  <p className="team-notice">Your administrator requires an authenticator for this account.</p>
                 )}
               </div>
             ) : (
