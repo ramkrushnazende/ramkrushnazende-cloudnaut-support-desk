@@ -25,6 +25,10 @@ from app.cognito import (
 from app.routers.attachments import router as attachments_router
 from database.app.database import get_db
 from database.app.models import AccessRequest, PasswordResetToken, TeamMember
+from app.services.ticket_notifications import (
+    TicketNotificationError,
+    send_ticket_confirmation_email,
+)
 
 app = FastAPI(title="Cloudnaut Support Desk Backend Service")
 app.include_router(attachments_router)
@@ -398,6 +402,14 @@ def create_internal_request(
             "created",
             f"Request created by {result['requester_name']}",
         )
+        try:
+            send_ticket_confirmation_email(result)
+        except TicketNotificationError as error:
+            logger.error(
+                "ticket_notification_failed ticket_id=%s category=confirmation_email error=%s",
+                result.get("id"),
+                error,
+            )
         return result
     except ValueError as err:
         raise HTTPException(

@@ -67,13 +67,50 @@ that file. Supply the IDs as CDK context values on every synth/diff/deploy
 command (they are public identifiers, not secrets):
 
 ```bash
--c cognitoUserPoolId=ap-south-1_9btqlmF3a \
--c cognitoAppClientId=5vg4ssrhma5kacpdns3830mg1r
+-c cognitoUserPoolId=ap-south-1_ywRrGmxpM \
+-c cognitoAppClientId=36hud2677sjbeb1qjov197fmai
 ```
 
 Review `npx cdk diff` before deploying. A change to EC2 UserData can require
 replacement of the EC2 instance; do not deploy if the diff reports replacement
 until an in-place production rollout has been planned.
+
+### SES ticket confirmation emails
+
+Ticket creation sends a plain-text confirmation through Amazon SES after the
+database transaction commits. A rejected or unavailable email does not fail
+ticket creation; the backend logs the notification failure instead.
+
+1. Verify the sender identity in SES in `ap-south-1`:
+
+   ```bash
+   aws sesv2 create-email-identity \
+     --region ap-south-1 \
+     --email-identity krushnadarkunde14@gmail.com \
+     --profile ram-cloudnaut
+   ```
+
+   Open the verification link delivered by SES. In the SES sandbox, only
+   verified recipient addresses can receive mail (or use the simulator
+   addresses); request production access in the SES console before sending to
+   arbitrary customer addresses.
+2. Store the verified sender in the existing Secrets Manager app secret as
+   `SES_FROM_EMAIL` (alongside `AUTH_SECRET_KEY`):
+
+   ```bash
+   aws secretsmanager get-secret-value --secret-id <AppSecretArn> \
+     --query SecretString --output text --profile ram-cloudnaut > /tmp/app-secret.json
+   # Edit only SES_FROM_EMAIL=krushnadarkunde14@gmail.com in the temporary file, then:
+   aws secretsmanager put-secret-value --secret-id <AppSecretArn> \
+     --secret-string file:///tmp/app-secret.json --profile ram-cloudnaut
+   ```
+
+   Do not commit or log the temporary secret file. Restart the application
+   service after updating it so the backend reloads the value.
+
+The EC2 instance role already has `ses:SendEmail` and `ses:SendRawEmail`
+permissions, and the sender is read only from the 0600 Secrets Manager-backed
+runtime environment.
 
 ## After deploy — verify
 

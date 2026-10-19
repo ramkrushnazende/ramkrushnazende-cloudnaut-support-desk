@@ -177,7 +177,10 @@ function App() {
           />
         ) : !session ? (
           showForgotPassword ? (
-            <ForgotPasswordForm onBack={() => setShowForgotPassword(false)} />
+            <ForgotPasswordForm
+              cognitoMode={cognitoMode}
+              onBack={() => setShowForgotPassword(false)}
+            />
           ) : showSignup ? (
             <SignupForm
               initialRole={selectedRole}
@@ -196,7 +199,8 @@ function App() {
                   selectedRole={selectedRole}
                   onLogin={handleLogin}
                   onBackToRoles={() => setSelectedRole(null)}
-                  onSignUp={() => setShowSignup(true)}
+                  onSignUp={selectedRole === 'admin' ? undefined : () => setShowSignup(true)}
+                  onForgotPassword={() => setShowForgotPassword(true)}
                 />
               ) : (
                 <RoleSelection

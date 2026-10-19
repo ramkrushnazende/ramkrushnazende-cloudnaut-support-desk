@@ -14,10 +14,12 @@ from app import app, ALLOWED_ORIGINS
 client = TestClient(app)
 
 FRONTEND_ORIGIN = "https://dlrs7mu8wley1.cloudfront.net"
+CURRENT_FRONTEND_ORIGIN = "https://d1pmteawhkbk6r.cloudfront.net"
 
 
 def test_production_frontend_origin_is_allowed():
     assert FRONTEND_ORIGIN in ALLOWED_ORIGINS
+    assert CURRENT_FRONTEND_ORIGIN in ALLOWED_ORIGINS
 
 
 def test_login_preflight_allows_frontend_origin():

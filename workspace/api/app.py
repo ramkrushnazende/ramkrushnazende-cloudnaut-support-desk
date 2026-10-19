@@ -47,6 +47,7 @@ _DEFAULT_ALLOWED_ORIGINS = [
     "https://dlrs7mu8wley1.cloudfront.net",  # previous frontend
     "https://d1a5d0plkslw74.cloudfront.net",  # current frontend
     "https://d26e7v7avs1w1m.cloudfront.net",
+    "https://d1pmteawhkbk6r.cloudfront.net",  # production frontend
     "http://localhost:3000",
     "http://localhost:5173",
     "http://localhost:5174",

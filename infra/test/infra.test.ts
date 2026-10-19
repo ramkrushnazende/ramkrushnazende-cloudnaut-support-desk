@@ -19,8 +19,8 @@ function synthFrontend() {
 function synth(extraContext: Record<string, string> = {}) {
   const app = new cdk.App({
     context: {
-      cognitoUserPoolId: 'ap-south-1_9btqlmF3a',
-      cognitoAppClientId: '5vg4ssrhma5kacpdns3830mg1r',
+      cognitoUserPoolId: 'ap-south-1_ywRrGmxpM',
+      cognitoAppClientId: '36hud2677sjbeb1qjov197fmai',
       ...extraContext,
     },
   });
@@ -187,8 +187,8 @@ test('EC2 app environment configures Cognito for both application containers', (
   const template = JSON.stringify(t.toJSON());
   expect(template).toContain('AWS_REGION=${AWS_REGION}');
   expect(template).toContain('AUTH_MODE=cognito');
-  expect(template).toContain('COGNITO_USER_POOL_ID=ap-south-1_9btqlmF3a');
-  expect(template).toContain('COGNITO_APP_CLIENT_ID=5vg4ssrhma5kacpdns3830mg1r');
+  expect(template).toContain('COGNITO_USER_POOL_ID=ap-south-1_ywRrGmxpM');
+  expect(template).toContain('COGNITO_APP_CLIENT_ID=36hud2677sjbeb1qjov197fmai');
   expect(template.match(/env_file: \[\/opt\/cloudnaut\/app.env\]/g)).toHaveLength(2);
 });
 

@@ -14,13 +14,37 @@ Infra is NOT auto-deployed by the pipeline (safety). To change infrastructure:
 ```bash
 cd infra && npm run build
 npx cdk diff  CloudnautSupportDeskStack --profile ram-cloudnaut \
-  -c cognitoUserPoolId=ap-south-1_9btqlmF3a -c cognitoAppClientId=5vg4ssrhma5kacpdns3830mg1r
+  -c cognitoUserPoolId=ap-south-1_ywRrGmxpM -c cognitoAppClientId=36hud2677sjbeb1qjov197fmai
 # Review for replacements/deletions/SG/IAM/DB changes. STOP if anything would
 # replace EC2/RDS/S3/Cognito/CloudFront. Then:
 npx cdk deploy CloudnautSupportDeskStack --profile ram-cloudnaut \
-  -c cognitoUserPoolId=ap-south-1_9btqlmF3a -c cognitoAppClientId=5vg4ssrhma5kacpdns3830mg1r
+  -c cognitoUserPoolId=ap-south-1_ywRrGmxpM -c cognitoAppClientId=36hud2677sjbeb1qjov197fmai
 ```
 Frontend stack deploy requires a built `workspace/frontend/dist` (asset source).
+
+### Optional phone-number SMS verification
+
+The application already supports E.164 phone numbers in Profile Settings. The
+backend persists a phone number only after Cognito reports
+`phone_number_verified=true`; SMS MFA remains disabled by default.
+
+Enable Cognito SMS delivery only after AWS SMS spending, sender registration,
+and delivery permissions have been approved:
+
+```bash
+cd infra
+npx cdk diff CloudnautSupportDeskStack --profile ram-cloudnaut \
+  -c enablePhoneSmsVerification=true
+npx cdk deploy CloudnautSupportDeskStack --profile ram-cloudnaut \
+  -c enablePhoneSmsVerification=true
+```
+
+Review the diff for unintended EC2, RDS, Cognito, or secret changes before
+deploying. For Indian phone numbers, TRAI/DLT sender registration may also be
+required. Do not enable `enableSmsMfa` unless SMS MFA is explicitly requested.
+If the deployed pool has no `SmsConfiguration`, phone OTP delivery is not
+available yet; the UI will surface Cognito's delivery error without writing an
+unverified number to PostgreSQL.
 
 ## Manual backend deploy (if needed, mirrors the SSM job)
 ```bash

@@ -203,6 +203,14 @@ describe('public Cognito registration', () => {
 // signIn
 // ---------------------------------------------------------------------------
 describe('signIn', () => {
+  it('normalizes the email username before authenticating', async () => {
+    behaviour.authError = 'NotAuthorizedException'
+    await expect(signIn('  USER@EXAMPLE.COM ', 'password')).rejects.toThrow(
+      'Email or password is incorrect.',
+    )
+    expect(behaviour.lastUser.Username).toBe('user@example.com')
+  })
+
   it('returns SUCCESS with an access token on a clean login', async () => {
     behaviour.auth = 'success'
     const result = await signIn('a@x.com', 'pw')

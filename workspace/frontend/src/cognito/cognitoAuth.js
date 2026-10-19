@@ -89,6 +89,40 @@ export function resendSignUpCode(email) {
   })
 }
 
+/** Ask Cognito to send a password-reset verification code to the user's email. */
+export function startPasswordReset(email) {
+  const user = makeUser(email.trim().toLowerCase())
+  return new Promise((resolve, reject) => {
+    user.forgotPassword({
+      onSuccess: () => resolve({ status: 'CODE_SENT' }),
+      onFailure: (err) => reject(new Error(safeMessage(err))),
+      inputVerificationCode: () => resolve({ status: 'CODE_SENT' }),
+    })
+  })
+}
+
+/** Confirm a Cognito password reset with the emailed code. */
+export function confirmPasswordReset(email, code, newPassword) {
+  const user = makeUser(email.trim().toLowerCase())
+  return new Promise((resolve, reject) => {
+    user.confirmPassword(code.trim(), newPassword, {
+      onSuccess: () => resolve({ status: 'RESET' }),
+      onFailure: (err) => {
+        const errorCode = err && (err.code || err.name)
+        if (
+          ['InvalidPasswordException', 'PasswordHistoryPolicyViolationException'].includes(
+            errorCode,
+          )
+        ) {
+          reject(new Error('The new password does not meet your account password requirements.'))
+          return
+        }
+        reject(new Error(safeMessage(err)))
+      },
+    })
+  })
+}
+
 function buildUserPool() {
   const { userPoolId, clientId } = getCognitoConfig()
   if (!userPoolId || !clientId) {
@@ -125,6 +159,10 @@ function safeMessage(err) {
       return 'That code has expired. Request a new one.'
     case 'PasswordResetRequiredException':
       return 'A password reset is required. Use "Forgot password".'
+    case 'LimitExceededException':
+      return 'Too many reset attempts. Wait a few minutes and try again.'
+    case 'CodeDeliveryFailureException':
+      return 'Cognito could not deliver the reset code. Contact support.'
     case 'UserNotConfirmedException':
       return 'Your account is not yet confirmed.'
     default:
@@ -139,8 +177,9 @@ function safeMessage(err) {
  */
 export function signIn(email, password) {
   const pool = buildUserPool()
-  const user = makeUser(email, pool)
-  const authDetails = new sdk.AuthenticationDetails({ Username: email, Password: password })
+  const username = email.trim().toLowerCase()
+  const user = makeUser(username, pool)
+  const authDetails = new sdk.AuthenticationDetails({ Username: username, Password: password })
 
   return new Promise((resolve, reject) => {
     user.authenticateUser(authDetails, {
