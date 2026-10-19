@@ -147,7 +147,7 @@ jobs:
             exit 1
           fi
 
-          CHANGE_SET_ARN=$(jq -r '.Id // empty' /tmp/guarded-change-set.json)
+          CHANGE_SET_ARN=$(jq -r '.ChangeSetId // empty' /tmp/guarded-change-set.json)
           if [[ -z "$CHANGE_SET_ARN" || "$CHANGE_SET_ARN" == "null" ]]; then
             echo "::error::Change set ARN is missing"
             exit 1
