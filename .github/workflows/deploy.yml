@@ -24,21 +24,207 @@ env:
   AWS_ACCOUNT: '771675725990'
   API_REPO: cloudnaut-support-desk-api
   BACKEND_REPO: cloudnaut-support-desk-backend
-  INSTANCE_ID: i-0f35e03d7af81e88d
   BACKEND_STACK: CloudnautSupportDeskStack
   FRONTEND_STACK: CloudnautSupportDeskFrontendStack
-  DISTRIBUTION_ID: E2YDO517JF7MQP
   # Public Cognito identifiers (safe in the frontend bundle / CDK context).
-  COGNITO_USER_POOL_ID: ap-south-1_9btqlmF3a
-  COGNITO_APP_CLIENT_ID: 5vg4ssrhma5kacpdns3830mg1r
+  COGNITO_USER_POOL_ID: ap-south-1_ywRrGmxpM
+  COGNITO_APP_CLIENT_ID: 36hud2677sjbeb1qjov197fmai
 
 jobs:
+  # ------------------------------------------------------------------ #
+  # 0. Deploy infrastructure (CDK) FIRST, with a destructive-change guard.
+  #    This makes the pipeline fully automated end to end: infra is applied
+  #    before images/app so the targets always match the committed stack.
+  #    SAFETY GATE: CDK creates one named CloudFormation change set. The job
+  #    inspects that exact set and executes its ARN only after the guard passes.
+  #    The job FAILS CLOSED for Replacement == True, Replacement == Conditional,
+  #    or resource removals (Action == Remove/Delete).
+  # ------------------------------------------------------------------ #
+  deploy-infra:
+    name: Deploy infrastructure (CDK, guarded)
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Prepare, inspect, and execute the guarded change set
+        run: |
+          set -euo pipefail
+          CS="ci-guard-${{ github.run_id }}-${{ github.run_attempt }}"
+          CHANGE_SET_ARN=""
+          CLEANED=0
+          EXECUTION_STARTED=0
+
+          delete_change_set() {
+            if aws cloudformation delete-change-set \
+              --stack-name "$BACKEND_STACK" \
+              --change-set-name "$CS"; then
+              CLEANED=1
+              return 0
+            fi
+            echo "::error::Failed to delete unexecuted change set $CS"
+            return 1
+          }
+
+          cleanup() {
+            local exit_code=$?
+            if [[ "$EXECUTION_STARTED" == "0" && "$CLEANED" == "0" ]]; then
+              # Keep the original failure status if creation/inspection failed;
+              # cleanup must never turn an error into a successful deployment.
+              delete_change_set || true
+            fi
+            exit "$exit_code"
+          }
+          trap cleanup EXIT
+
+          # CDK creates the named set and handles CREATE versus UPDATE. A
+          # prepare failure is a deployment failure, never a no-op success.
+          if ! npx cdk deploy CloudnautSupportDeskStack \
+            --method prepare-change-set \
+            --change-set-name "$CS" \
+            --require-approval never; then
+            echo "::error::CDK could not prepare change set $CS"
+            exit 1
+          fi
+
+          # CloudFormation reports a genuine no-op as FAILED, so record the
+          # waiter result and classify only CDK's exact no-change response below.
+          WAIT_FAILED=0
+          if ! aws cloudformation wait change-set-create-complete \
+            --stack-name "$BACKEND_STACK" \
+            --change-set-name "$CS"; then
+            WAIT_FAILED=1
+          fi
+
+          # Describe exactly the named set that will be inspected/executed below.
+          # This must remain a hard failure: permission, missing-resource, and
+          # API errors cannot be interpreted as a no-op.
+          if ! aws cloudformation describe-change-set \
+            --stack-name "$BACKEND_STACK" \
+            --change-set-name "$CS" \
+            --output json > /tmp/guarded-change-set.json; then
+            echo "::error::Could not describe change set $CS"
+            exit 1
+          fi
+
+          STATUS=$(jq -r '.Status // empty' /tmp/guarded-change-set.json)
+          STATUS_REASON=$(jq -r '.StatusReason // empty' /tmp/guarded-change-set.json)
+
+          if [[ "$WAIT_FAILED" == "1" ]]; then
+            NO_CHANGE=0
+            if [[ "$STATUS" == "FAILED" ]]; then
+              case "$STATUS_REASON" in
+                "The submitted information didn't contain changes."*|"No updates are to be performed."*)
+                  NO_CHANGE=1
+                  ;;
+              esac
+            fi
+
+            if [[ "$NO_CHANGE" == "1" ]]; then
+              echo "No infrastructure changes are required; continuing to application deployment"
+              # prepare-change-set intentionally leaves the failed empty set;
+              # cleanup is required and its failure must fail this job.
+              if ! delete_change_set; then
+                echo "::error::Could not delete no-op change set $CS"
+                exit 1
+              fi
+              exit 0
+            fi
+
+            echo "::error::Change set $CS did not reach CREATE_COMPLETE"
+            [[ -n "$STATUS_REASON" ]] && echo "Status reason: $STATUS_REASON"
+            exit 1
+          fi
+
+          if [[ "$STATUS" != "CREATE_COMPLETE" ]]; then
+            echo "::error::Change set $CS has unexpected status: ${STATUS:-unknown}"
+            [[ -n "$STATUS_REASON" ]] && echo "Status reason: $STATUS_REASON"
+            exit 1
+          fi
+
+          CHANGE_SET_TYPE=$(jq -r '.ChangeSetType // empty' /tmp/guarded-change-set.json)
+          case "$CHANGE_SET_TYPE" in
+            CREATE|UPDATE) ;;
+            *)
+              echo "::error::Unsupported change-set type: ${CHANGE_SET_TYPE:-unknown}"
+              exit 1
+              ;;
+          esac
+
+          CHANGE_SET_ARN=$(jq -r '.Id // empty' /tmp/guarded-change-set.json)
+          if [[ -z "$CHANGE_SET_ARN" || "$CHANGE_SET_ARN" == "null" ]]; then
+            echo "::error::Change set $CS did not return an ARN"
+            exit 1
+          fi
+
+          BLOCKED=$(jq -r '
+            (.Changes // [])[]
+            | .ResourceChange
+            | select(
+                .Replacement == "True"
+                or .Replacement == "Conditional"
+                or .Action == "Remove"
+                or .Action == "Delete"
+              )
+            | [
+                (.LogicalResourceId // "unknown"),
+                (.ResourceType // "unknown"),
+                (.Action // "unknown"),
+                (.Replacement // "None")
+              ]
+            | @tsv
+          ' /tmp/guarded-change-set.json)
+
+          if [[ -n "$BLOCKED" ]]; then
+            echo "::error::Refusing to execute $CS — destructive change detected:"
+            printf '%s\n' "$BLOCKED"
+            if ! delete_change_set; then
+              exit 1
+            fi
+            exit 1
+          fi
+
+          echo "Guard passed — executing the exact inspected change set $CHANGE_SET_ARN"
+          # CDK execute-change-set bypasses synthesis and executes the exact ARN
+          # that was described and approved above; it does not create another set.
+          EXECUTION_STARTED=1
+          if ! npx cdk deploy CloudnautSupportDeskStack \
+            --method execute-change-set \
+            --change-set-name "$CHANGE_SET_ARN" \
+            --require-approval never; then
+            echo "::error::Could not execute inspected change set $CHANGE_SET_ARN"
+            exit 1
+          fi
+          echo "Infrastructure deployment completed from inspected change set $CHANGE_SET_ARN"
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ env.AWS_ACCOUNT }}
+          CDK_DEFAULT_REGION: ${{ env.AWS_REGION }}
+
   # ------------------------------------------------------------------ #
   # 1. Build + push the API and backend images, tagged with the commit SHA.
   # ------------------------------------------------------------------ #
   build-and-push:
     name: Build & push images (ECR)
     runs-on: ubuntu-latest
+    needs: deploy-infra
     environment: production
     outputs:
       sha: ${{ github.sha }}
@@ -99,6 +285,12 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          INSTANCE_ID=$(aws cloudformation describe-stack-resources \
+            --stack-name "$BACKEND_STACK" \
+            --query "StackResources[?ResourceType=='AWS::EC2::Instance'].PhysicalResourceId | [0]" \
+            --output text)
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != "None"
+          echo "EC2 instance resolved from CloudFormation: $INSTANCE_ID"
           REGISTRY="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           API_IMG="$REGISTRY/$API_REPO:$SHA"
           BE_IMG="$REGISTRY/$BACKEND_REPO:$SHA"
@@ -128,6 +320,20 @@ jobs:
             cp docker-compose.prod.yml.bak docker-compose.prod.yml
             docker compose -f docker-compose.prod.yml pull || true
             systemctl restart cloudnaut.service || true
+            rollback_ok=0
+            for j in \$(seq 1 20); do
+              if curl -fsS http://localhost:4000/health >/dev/null && \
+                 docker exec app_backend python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health',timeout=3).status==200 else 1)"; then
+                rollback_ok=1
+                break
+              fi
+              sleep 6
+            done
+            if [ "\$rollback_ok" != "1" ]; then
+              echo "ROLLBACK FAILED — production services are not healthy";
+              exit 2
+            fi
+            echo "ROLLBACK OK — previous production images restored";
             exit 1
           fi
           echo "DEPLOY OK sha=${SHA}"
@@ -216,6 +422,10 @@ jobs:
 
       - name: Invalidate CloudFront and wait
         run: |
+          DISTRIBUTION_ID=$(aws cloudformation describe-stacks --stack-name "$FRONTEND_STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text)
+          test -n "$DISTRIBUTION_ID" && test "$DISTRIBUTION_ID" != "None"
+          echo "CloudFront distribution: $DISTRIBUTION_ID"
           INV=$(aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" \
             --paths "/*" --query "Invalidation.Id" --output text)
           aws cloudfront wait invalidation-completed --distribution-id "$DISTRIBUTION_ID" --id "$INV"
@@ -233,13 +443,13 @@ jobs:
   summary:
     name: Deployment summary
     runs-on: ubuntu-latest
-    needs: [build-and-push, deploy-backend, deploy-frontend]
+    needs: [deploy-infra, build-and-push, deploy-backend, deploy-frontend]
     steps:
       - run: |
           {
             echo "## Deployment complete";
+            echo "- Infrastructure: CDK executed the inspected change set after replacement/deletion checks";
             echo "- Commit SHA: \`${{ github.sha }}\`";
             echo "- API/backend image tag: \`${{ github.sha }}\`";
-            echo "- Instance: \`${{ env.INSTANCE_ID }}\` (SSM)";
-            echo "- CloudFront: \`${{ env.DISTRIBUTION_ID }}\`";
+            echo "- Instance and CloudFront IDs resolved from CloudFormation";
           } >> "$GITHUB_STEP_SUMMARY"

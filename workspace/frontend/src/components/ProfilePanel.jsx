@@ -72,10 +72,15 @@ function ProfilePanel({ user, onClose, onPhoneVerified }) {
 
   const savePhone = () =>
     run(async () => {
-      if (!/^\+[1-9]\d{7,14}$/.test(phone.trim())) {
+      const enteredPhone = phone.trim()
+      const normalizedPhone = /^\d{10}$/.test(enteredPhone)
+        ? `+91${enteredPhone}`
+        : enteredPhone
+      if (!/^\+[1-9]\d{7,14}$/.test(normalizedPhone)) {
         throw new Error('Enter a valid phone number in international format, such as +911234567890.')
       }
-      await updatePhoneNumber(phone.trim())
+      setPhone(normalizedPhone)
+      await updatePhoneNumber(normalizedPhone)
       await sendPhoneVerificationCode()
       setPhoneStep('codeSent')
       setNotice('We sent a verification code to your phone.')

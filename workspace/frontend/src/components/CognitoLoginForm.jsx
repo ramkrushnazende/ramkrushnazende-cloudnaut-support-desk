@@ -28,7 +28,7 @@ const roleNames = {
   admin: 'Admin',
 }
 
-function CognitoLoginForm({ onLogin, onBackToRoles, onSignUp, selectedRole }) {
+function CognitoLoginForm({ onLogin, onBackToRoles, onSignUp, onForgotPassword, selectedRole }) {
   const [step, setStep] = useState(STEP.PASSWORD)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -169,12 +169,17 @@ function CognitoLoginForm({ onLogin, onBackToRoles, onSignUp, selectedRole }) {
             <button type="submit" className="submit-button" disabled={submitting}>
               {submitting ? 'Signing in...' : 'Sign in'}
             </button>
-            {onSignUp && (
+            {onSignUp && selectedRole !== 'admin' && (
               <p className="auth-signup-prompt">
                 Need an account?{' '}
                 <button type="button" className="auth-link" onClick={onSignUp}>
                   Register for access
                 </button>
+              </p>
+            )}
+            {onForgotPassword && (
+              <p className="auth-signup-prompt">
+                <button type="button" className="auth-link" onClick={onForgotPassword}>Forgot password?</button>
               </p>
             )}
             {onBackToRoles && (

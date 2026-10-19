@@ -121,12 +121,38 @@ export class GitHubOidcDeployRole extends Construct {
       }),
     );
 
-    // --- CloudFormation describe (read stack outputs the pipeline consumes). ---
+    // --- CloudFormation: read outputs the pipeline consumes + run the
+    //     change-set safety guard + let `cdk deploy` drive CloudFormation.
+    //     Scoped to this project's stacks + the CDK bootstrap (CDKToolkit)
+    //     stack that `cdk deploy` inspects. The actual resource mutations are
+    //     performed by the assumed cdk-* bootstrap roles (cfn-exec), not by
+    //     this role directly. ---
     this.role.addToPolicy(
       new iam.PolicyStatement({
-        sid: 'ReadStackOutputs',
-        actions: ['cloudformation:DescribeStacks'],
-        resources: [`arn:aws:cloudformation:${props.region}:${props.account}:stack/CloudnautSupportDesk*/*`],
+        sid: 'CloudFormationDeploy',
+        actions: [
+          'cloudformation:DescribeStacks',
+          'cloudformation:DescribeStackEvents',
+          'cloudformation:DescribeStackResources',
+          'cloudformation:GetTemplate',
+          'cloudformation:CreateChangeSet',
+          'cloudformation:DescribeChangeSet',
+          'cloudformation:ExecuteChangeSet',
+          'cloudformation:DeleteChangeSet',
+          'cloudformation:GetTemplateSummary',
+        ],
+        resources: [
+          `arn:aws:cloudformation:${props.region}:${props.account}:stack/CloudnautSupportDesk*/*`,
+          `arn:aws:cloudformation:${props.region}:${props.account}:stack/CDKToolkit/*`,
+        ],
+      }),
+    );
+    // CDK reads the bootstrap version from SSM before deploying.
+    this.role.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'CdkBootstrapVersionLookup',
+        actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+        resources: [`arn:aws:ssm:${props.region}:${props.account}:parameter/cdk-bootstrap/*`],
       }),
     );
 

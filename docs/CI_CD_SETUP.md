@@ -11,10 +11,10 @@ wired into `CloudnautSupportDeskStack`. Deploy it (review the diff first):
 cd infra
 npm ci && npm run build
 npx cdk diff CloudnautSupportDeskStack --profile ram-cloudnaut \
-  -c cognitoUserPoolId=ap-south-1_9btqlmF3a -c cognitoAppClientId=5vg4ssrhma5kacpdns3830mg1r
+  -c cognitoUserPoolId=ap-south-1_ywRrGmxpM -c cognitoAppClientId=36hud2677sjbeb1qjov197fmai
 # Expect ADDITIONS only: Custom::AWSCDKOpenIdConnectProvider + IAM role/policy.
 npx cdk deploy CloudnautSupportDeskStack --profile ram-cloudnaut \
-  -c cognitoUserPoolId=ap-south-1_9btqlmF3a -c cognitoAppClientId=5vg4ssrhma5kacpdns3830mg1r
+  -c cognitoUserPoolId=ap-south-1_ywRrGmxpM -c cognitoAppClientId=36hud2677sjbeb1qjov197fmai
 ```
 If the account already has a `token.actions.githubusercontent.com` provider,
 add `-c createGithubOidcProvider=false` so CDK references it instead of creating

@@ -83,6 +83,17 @@ describe('ProfilePanel', () => {
     expect(await screen.findByText('Phone number verified and saved.')).toBeInTheDocument()
   })
 
+  it('normalizes a ten-digit Indian number to E.164 before sending it to Cognito', async () => {
+    render(<ProfilePanel user={USER} />)
+    await screen.findByText('Not enabled')
+    fireEvent.change(screen.getByLabelText(/Phone/), { target: { value: '7030821421' } })
+    fireEvent.click(screen.getByRole('button', { name: /save & send code/i }))
+
+    await waitFor(() => expect(updatePhoneNumber).toHaveBeenCalledWith('+917030821421'))
+    expect(sendPhoneVerificationCode).toHaveBeenCalled()
+    expect(screen.getByLabelText(/Phone/)).toHaveValue('+917030821421')
+  })
+
   it('allows retrying the profile save after Cognito accepted the SMS code', async () => {
     let phoneSyncAttempts = 0
     apiFetch.mockImplementation((path) => Promise.resolve(path === '/profile/mfa'
@@ -109,7 +120,7 @@ describe('ProfilePanel', () => {
   it('rejects invalid phone formats without calling Cognito', async () => {
     render(<ProfilePanel user={USER} />)
     await screen.findByText('Not enabled')
-    fireEvent.change(screen.getByLabelText(/Phone/), { target: { value: '9999999999' } })
+    fireEvent.change(screen.getByLabelText(/Phone/), { target: { value: '703082142' } })
     fireEvent.click(screen.getByRole('button', { name: /save & send code/i }))
 
     expect(await screen.findByText(/international format/)).toBeInTheDocument()

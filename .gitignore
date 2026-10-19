@@ -41,6 +41,11 @@ pnpm-debug.log*
 .env
 .env.*
 !.env.example
+# The frontend production build config is PUBLIC (API Gateway URL + Cognito
+# pool/client IDs + region — all embedded in the browser bundle anyway). It
+# MUST be committed so the CI/CD frontend build produces a correctly-configured
+# bundle; without it the deployed SPA would have no API URL / Cognito config.
+!workspace/frontend/.env.production
 
 # ---------------------------------------------------------
 # Local databases

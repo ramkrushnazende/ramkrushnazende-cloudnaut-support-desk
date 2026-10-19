@@ -55,6 +55,12 @@ describe('CognitoLoginForm', () => {
     expect(onSignUp).toHaveBeenCalledOnce()
   })
 
+  it('does not offer registration for the admin sign-in role', () => {
+    render(<CognitoLoginForm onLogin={vi.fn()} onSignUp={vi.fn()} selectedRole="admin" />)
+
+    expect(screen.queryByRole('button', { name: 'Register for access' })).not.toBeInTheDocument()
+  })
+
   it('logs in directly when no MFA is required', async () => {
     signIn.mockResolvedValue({ status: AuthStatus.SUCCESS })
     const onLogin = vi.fn()

@@ -16,8 +16,8 @@
   "context": {
     "appName": "cloudnaut-support-desk",
     "env": "dev",
-    "cognitoUserPoolId": "ap-south-1_9btqlmF3a",
-    "cognitoAppClientId": "5vg4ssrhma5kacpdns3830mg1r",
+    "cognitoUserPoolId": "ap-south-1_ywRrGmxpM",
+    "cognitoAppClientId": "36hud2677sjbeb1qjov197fmai",
     "@aws-cdk/aws-ec2:restrictDefaultSecurityGroup": true,
     "@aws-cdk/aws-iam:minimizePolicies": true,
     "@aws-cdk/core:checkSecretUsage": true,
