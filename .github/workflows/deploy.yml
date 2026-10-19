@@ -167,10 +167,10 @@ jobs:
                   or .Action == "Remove"
                   or .Action == "Delete"
                 )
-                and not (
-                  .ResourceType == "AWS::CDK::Metadata"
-                  and .Action == "Modify"
-                  and .Replacement == "Conditional"
+                and (
+                  .ResourceType != "AWS::CDK::Metadata"
+                  or .Action != "Modify"
+                  or .Replacement != "Conditional"
                 )
               )
             | [
