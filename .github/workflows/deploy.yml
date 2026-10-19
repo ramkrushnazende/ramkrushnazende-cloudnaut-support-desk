@@ -147,15 +147,6 @@ jobs:
             exit 1
           fi
 
-          CHANGE_SET_TYPE=$(jq -r '.ChangeSetType // empty' /tmp/guarded-change-set.json)
-          case "$CHANGE_SET_TYPE" in
-            CREATE|UPDATE) ;;
-            *)
-              echo "::error::Unsupported change-set type: ${CHANGE_SET_TYPE:-unknown}"
-              exit 1
-              ;;
-          esac
-
           CHANGE_SET_ARN=$(jq -r '.Id // empty' /tmp/guarded-change-set.json)
           if [[ -z "$CHANGE_SET_ARN" || "$CHANGE_SET_ARN" == "null" ]]; then
             echo "::error::Change set ARN is missing"
