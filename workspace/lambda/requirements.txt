@@ -1,0 +1,3 @@
+-r backend/requirements.txt
+-r api/requirements.txt
+mangum>=0.17.0

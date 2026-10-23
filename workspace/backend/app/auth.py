@@ -1,5 +1,4 @@
 import logging
-import logging
 import os
 import re
 import uuid
@@ -25,9 +24,12 @@ from app.cognito import (
 )
 from database.app.database import get_db
 from database.app.models import SecuritySetting, TeamMember
+from app.secrets import configured_secret_value
 
 
-JWT_SECRET = os.getenv("AUTH_SECRET_KEY", "")
+JWT_SECRET = os.getenv("AUTH_SECRET_KEY") or configured_secret_value(
+    "APP_SECRET_ARN", "AUTH_SECRET_KEY"
+)
 JWT_ALGORITHM = "HS256"
 TOKEN_LIFETIME = timedelta(hours=8)
 password_hash = PasswordHash.recommended()

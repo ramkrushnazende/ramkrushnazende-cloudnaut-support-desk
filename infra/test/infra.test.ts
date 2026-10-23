@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as path from 'path';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { CloudnautSupportDeskStack } from '../lib/cloudnaut-support-desk-stack';
+import { CloudnautSupportDeskLambdaStack } from '../lib/cloudnaut-support-desk-lambda-stack';
 import { FrontendStack } from '../lib/frontend-stack';
 
 function synthFrontend() {
@@ -35,6 +36,42 @@ function synth(extraContext: Record<string, string> = {}) {
   });
   return Template.fromStack(stack);
 }
+
+function synthLambda() {
+  const app = new cdk.App({
+    context: {
+      cognitoUserPoolId: 'ap-south-1_ywRrGmxpM',
+      cognitoAppClientId: '36hud2677sjbeb1qjov197fmai',
+    },
+  });
+  const stack = new CloudnautSupportDeskLambdaStack(app, 'CloudnautSupportDeskLambdaStack', {
+    env: { account: '123456789012', region: 'ap-south-1' },
+    lambdaEcrRepo: 'cloudnaut-support-desk-lambda',
+    imageTag: 'latest',
+    postgresMajorVersion: '16',
+    databaseName: 'cloudnaut_db',
+    databaseUsername: 'cloudnaut',
+  });
+  return Template.fromStack(stack);
+}
+
+test('Lambda backend has no EC2 host and uses API Gateway Lambda integration', () => {
+  const t = synthLambda();
+  t.resourceCountIs('AWS::EC2::Instance', 0);
+  t.resourceCountIs('AWS::Lambda::Function', 2);
+  t.resourceCountIs('AWS::RDS::DBProxy', 1);
+  t.hasResourceProperties('AWS::RDS::DBInstance', {
+    DBInstanceClass: 'db.t3.micro',
+    AllocatedStorage: '20',
+    MultiAZ: false,
+    StorageType: 'gp2',
+    StorageEncrypted: true,
+    PubliclyAccessible: false,
+  });
+  t.hasResourceProperties('AWS::ApiGatewayV2::Integration', {
+    IntegrationType: 'AWS_PROXY',
+  });
+});
 
 test('everything is in a single stack (one of each core resource)', () => {
   const t = synth();

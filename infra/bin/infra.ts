@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { CloudnautSupportDeskStack } from '../lib/cloudnaut-support-desk-stack';
+import { CloudnautSupportDeskLambdaStack } from '../lib/cloudnaut-support-desk-lambda-stack';
 import { FrontendStack } from '../lib/frontend-stack';
 
 /**
@@ -19,14 +19,13 @@ const app = new cdk.App();
 const account = process.env.CDK_DEFAULT_ACCOUNT ?? '771675725990';
 const region = process.env.CDK_DEFAULT_REGION ?? 'ap-south-1';
 
-new CloudnautSupportDeskStack(app, 'CloudnautSupportDeskStack', {
+new CloudnautSupportDeskLambdaStack(app, 'CloudnautSupportDeskLambdaStack', {
   env: { account, region },
   description: 'Cloudnaut Support Desk — single-stack backend infrastructure',
 
-  // Container images (Amazon ECR). Push these before/just after deploy.
-  apiEcrRepo: 'cloudnaut-support-desk-api',
-  backendEcrRepo: 'cloudnaut-support-desk-backend',
-  imageTag: 'latest',
+  // Combined Lambda container image in Amazon ECR.
+  lambdaEcrRepo: 'cloudnaut-support-desk-lambda',
+  imageTag: process.env.CDK_IMAGE_TAG ?? 'latest',
 
   // Database.
   postgresMajorVersion: '16',

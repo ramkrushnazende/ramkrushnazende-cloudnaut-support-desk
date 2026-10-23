@@ -12,8 +12,10 @@ export interface GitHubOidcDeployRoleProps {
   readonly region: string;
   /** ECR repository names the pipeline pushes to. */
   readonly ecrRepos: string[];
-  /** EC2 instance id the pipeline deploys to via SSM. */
-  readonly instanceId: string;
+  /** EC2 instance id the pipeline deploys to via SSM (legacy mode). */
+  readonly instanceId?: string;
+  /** Lambda function name the pipeline updates (Lambda mode). */
+  readonly lambdaFunctionName?: string;
   /**
    * Whether to CREATE the GitHub OIDC provider. False when one already exists
    * in the account (there can be only one per issuer URL) — then it is looked
@@ -81,6 +83,8 @@ export class GitHubOidcDeployRole extends Construct {
       new iam.PolicyStatement({
         sid: 'EcrPushPull',
         actions: [
+          'ecr:CreateRepository',
+          'ecr:DescribeRepositories',
           'ecr:BatchCheckLayerAvailability',
           'ecr:GetDownloadUrlForLayer',
           'ecr:BatchGetImage',
@@ -95,31 +99,39 @@ export class GitHubOidcDeployRole extends Construct {
       }),
     );
 
-    // --- SSM deploy: send a command to the ONE app instance + read its result. ---
-    this.role.addToPolicy(
-      new iam.PolicyStatement({
-        sid: 'SsmSendCommandToInstance',
-        actions: ['ssm:SendCommand'],
-        resources: [
-          `arn:aws:ec2:${props.region}:${props.account}:instance/${props.instanceId}`,
-          // The AWS-RunShellScript document is an AWS-owned document.
-          'arn:aws:ssm:*::document/AWS-RunShellScript',
-        ],
-      }),
-    );
-    this.role.addToPolicy(
-      new iam.PolicyStatement({
-        sid: 'SsmReadCommandResults',
-        actions: [
-          'ssm:GetCommandInvocation',
-          'ssm:ListCommandInvocations',
-          'ssm:ListCommands',
-          'ssm:DescribeInstanceInformation',
-        ],
-        // These read APIs do not support resource-level scoping for commands.
-        resources: ['*'],
-      }),
-    );
+    if (props.instanceId) {
+      this.role.addToPolicy(
+        new iam.PolicyStatement({
+          sid: 'SsmSendCommandToInstance',
+          actions: ['ssm:SendCommand'],
+          resources: [
+            `arn:aws:ec2:${props.region}:${props.account}:instance/${props.instanceId}`,
+            'arn:aws:ssm:*::document/AWS-RunShellScript',
+          ],
+        }),
+      );
+      this.role.addToPolicy(
+        new iam.PolicyStatement({
+          sid: 'SsmReadCommandResults',
+          actions: [
+            'ssm:GetCommandInvocation',
+            'ssm:ListCommandInvocations',
+            'ssm:ListCommands',
+            'ssm:DescribeInstanceInformation',
+          ],
+          resources: ['*'],
+        }),
+      );
+    }
+    if (props.lambdaFunctionName) {
+      this.role.addToPolicy(
+        new iam.PolicyStatement({
+          sid: 'LambdaDeployment',
+          actions: ['lambda:UpdateFunctionCode', 'lambda:UpdateFunctionConfiguration', 'lambda:PublishVersion', 'lambda:UpdateAlias', 'lambda:GetFunction'],
+          resources: [`arn:aws:lambda:${props.region}:${props.account}:function:${props.lambdaFunctionName}`],
+        }),
+      );
+    }
 
     // --- CloudFormation: read outputs the pipeline consumes + run the
     //     change-set safety guard + let `cdk deploy` drive CloudFormation.

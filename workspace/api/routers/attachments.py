@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 
 from auth import require_roles
+from runtime import request_backend
 from schemas.attachments import AttachmentResponse
 
 
@@ -37,16 +38,13 @@ async def backend_attachment_request(
     files: dict | None = None,
 ):
     try:
-        async with httpx.AsyncClient(
-            base_url=BACKEND_URL,
+        response = await request_backend(
+            method,
+            path,
+            files=files,
+            headers={"Authorization": f"Bearer {access_token}"},
             timeout=BACKEND_TIMEOUT,
-        ) as client:
-            response = await client.request(
-                method,
-                path,
-                files=files,
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
+        )
     except httpx.RequestError as error:
         raise HTTPException(
             status_code=502,

@@ -1,11 +1,30 @@
 import os
+from urllib.parse import quote_plus
+
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import sessionmaker, declarative_base
 
+from app.secrets import get_secret
+
 # Use a persistent temp file inside the container for SQLite fallback
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/support_desk.db")
+def _database_url() -> str:
+    configured = os.getenv("DATABASE_URL", "").strip()
+    if configured:
+        return configured
+    proxy_endpoint = os.getenv("DB_PROXY_ENDPOINT", "").strip()
+    secret_arn = os.getenv("DB_SECRET_ARN", "").strip()
+    if proxy_endpoint and secret_arn:
+        secret = get_secret(secret_arn)
+        username = quote_plus(secret.get("username", ""))
+        password = quote_plus(secret.get("password", ""))
+        database_name = os.getenv("DB_NAME", secret.get("dbname", ""))
+        return f"postgresql+psycopg2://{username}:{password}@{proxy_endpoint}:5432/{database_name}"
+    return "sqlite:////tmp/support_desk.db"
+
+
+DATABASE_URL = _database_url()
 
 
 class DatabaseConfigurationError(RuntimeError):

@@ -8,6 +8,8 @@ from html import escape
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
+from app.secrets import configured_secret_value
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +24,10 @@ def send_ticket_confirmation_email(ticket: Mapping[str, object]) -> None:
     Missing configuration and SES failures are surfaced as a dedicated error
     so the API can log them without rolling back ticket creation.
     """
-    source = os.getenv("SES_FROM_EMAIL", "").strip()
+    source = (
+      os.getenv("SES_FROM_EMAIL", "").strip()
+      or configured_secret_value("APP_SECRET_ARN", "SES_FROM_EMAIL").strip()
+    )
     if not source:
         raise TicketNotificationError("SES_FROM_EMAIL is not configured.")
 

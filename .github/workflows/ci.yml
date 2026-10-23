@@ -125,13 +125,12 @@ jobs:
         run: npm run build
       - name: Infrastructure tests
         run: npx jest
-      - name: CDK synth backend stack (no AWS calls)
+      - name: CDK synth Lambda backend stack (no AWS calls)
         # The CDK app constructs the frontend stack too, so its asset must
-        # exist even when synthesising the backend stack by name. Pass the
-        # public Cognito context explicitly so this job does not depend on
-        # cdk.json context being present in the checked-out revision.
+        # exist even when synthesising the Lambda stack by name. Pass the
+        # public Cognito context explicitly.
         run: |
-          npx cdk synth CloudnautSupportDeskStack \
+          npx cdk synth CloudnautSupportDeskLambdaStack \
             -c cognitoUserPoolId=ap-south-1_ywRrGmxpM \
             -c cognitoAppClientId=36hud2677sjbeb1qjov197fmai
         env:

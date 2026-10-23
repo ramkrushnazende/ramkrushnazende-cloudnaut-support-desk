@@ -4,6 +4,7 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from auth import get_current_user, require_roles
+from runtime import request_backend
 from schemas.access_requests import AccessRequestCreate, AccessRequestResponse, AccessRequestReview
 from schemas.assignment import AssignmentRequest
 from schemas.dashboard import DashboardSummary
@@ -52,20 +53,17 @@ async def backend_request(
     backend HTTP errors to the public API.
     """
     try:
-        async with httpx.AsyncClient(
-            base_url=BACKEND_URL,
+        if method not in {"GET", "POST", "PATCH"}:
+            raise RuntimeError(f"Unsupported backend HTTP method: {method}")
+        headers = {"Authorization": f"Bearer {access_token}"} if access_token else None
+        response = await request_backend(
+            method,
+            path,
+            params=params,
+            json=json,
+            headers=headers,
             timeout=BACKEND_TIMEOUT,
-        ) as client:
-            if method not in {"GET", "POST", "PATCH"}:
-                raise RuntimeError(f"Unsupported backend HTTP method: {method}")
-            headers = {"Authorization": f"Bearer {access_token}"} if access_token else None
-            response = await client.request(
-                method,
-                path,
-                params=params,
-                json=json,
-                headers=headers,
-            )
+        )
     except httpx.RequestError as exc:
         raise HTTPException(
             status_code=502,
